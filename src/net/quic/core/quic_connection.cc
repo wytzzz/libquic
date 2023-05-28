@@ -326,6 +326,8 @@ void QuicConnection::ClearQueuedPackets() {
 }
 
 void QuicConnection::SetFromConfig(const QuicConfig& config) {
+
+
   if (config.negotiated()) {
     // Handshake complete, set handshake timeout to Infinite.
     SetNetworkTimeouts(QuicTime::Delta::Infinite(),
@@ -1137,6 +1139,7 @@ void QuicConnection::MaybeSendInResponseToPacket() {
   }
   // Now that we have received an ack, we might be able to send packets which
   // are queued locally, or drain streams which are blocked.
+  //如果 defer_send_in_response_to_packets_ 变量为 true，说明之前需要发送的数据包被延迟发送
   if (defer_send_in_response_to_packets_) {
     send_alarm_->Update(clock_->ApproximateNow(), QuicTime::Delta::Zero());
   } else {
@@ -1190,7 +1193,9 @@ QuicConsumedData QuicConnection::SendStreamData(
   // which decrypter will be used on an ack packet following a handshake
   // packet (a handshake packet from client to server could result in a REJ or a
   // SHLO from the server, leading to two different decrypters at the server.)
+
   ScopedRetransmissionScheduler alarm_delayer(this);
+  //尝试发送ack
   ScopedPacketBundler ack_bundler(this, SEND_ACK_IF_PENDING);
   // The optimized path may be used for data only packets which fit into a
   // standard buffer and don't need padding.
@@ -1200,6 +1205,7 @@ QuicConsumedData QuicConnection::SendStreamData(
     return packet_generator_.ConsumeDataFastPath(id, iov, offset, fin,
                                                  listener);
   }
+  //将应用层数据序列化后写入send_buffer
   return packet_generator_.ConsumeData(id, iov, offset, fin, listener);
 }
 
@@ -1208,6 +1214,7 @@ void QuicConnection::SendRstStream(QuicStreamId id,
                                    QuicStreamOffset bytes_written) {
   // Opportunistically bundle an ack with this outgoing packet.
   ScopedPacketBundler ack_bundler(this, SEND_ACK_IF_PENDING);
+  //添加控制流
   packet_generator_.AddControlFrame(QuicFrame(new QuicRstStreamFrame(
       id, AdjustErrorForVersion(error, version()), bytes_written)));
 
@@ -1217,9 +1224,11 @@ void QuicConnection::SendRstStream(QuicStreamId id,
     return;
   }
 
+  //停止在当前流重传.
   sent_packet_manager_->CancelRetransmissionsForStream(id);
   // Remove all queued packets which only contain data for the reset stream.
   QueuedPacketList::iterator packet_iterator = queued_packets_.begin();
+  //删除当前流上的重传frame
   while (packet_iterator != queued_packets_.end()) {
     QuicFrames* retransmittable_frames =
         &packet_iterator->retransmittable_frames;
@@ -1232,6 +1241,7 @@ void QuicConnection::SendRstStream(QuicStreamId id,
       ++packet_iterator;
       continue;
     }
+    //清空stream的资源.
     delete[] packet_iterator->encrypted_buffer;
     QuicUtils::ClearSerializedPacket(&(*packet_iterator));
     packet_iterator = queued_packets_.erase(packet_iterator);
@@ -1292,6 +1302,8 @@ void QuicConnection::ProcessUdpPacket(const IPEndPoint& self_address,
   if (debug_visitor_ != nullptr) {
     debug_visitor_->OnPacketReceived(self_address, peer_address, packet);
   }
+
+
   last_size_ = packet.length();
   current_packet_data_ = packet.data();
 
@@ -1312,12 +1324,16 @@ void QuicConnection::ProcessUdpPacket(const IPEndPoint& self_address,
            << time_of_last_received_packet_.ToDebuggingValue();
 
   ScopedRetransmissionScheduler alarm_delayer(this);
+
+  //解析packet
   if (!framer_.ProcessPacket(packet)) {
     // If we are unable to decrypt this packet, it might be
     // because the CHLO or SHLO packet was lost.
     if (framer_.error() == QUIC_DECRYPTION_FAILURE) {
+        //还处于handshake阶段
       if (encryption_level_ != ENCRYPTION_FORWARD_SECURE &&
           undecryptable_packets_.size() < max_undecryptable_packets_) {
+        //将无法加密的数据包存入到queue中.
         QueueUndecryptablePacket(packet);
       } else if (debug_visitor_ != nullptr) {
         debug_visitor_->OnUndecryptablePacket();
@@ -1329,12 +1345,14 @@ void QuicConnection::ProcessUdpPacket(const IPEndPoint& self_address,
     return;
   }
 
+  //状态更新
   ++stats_.packets_processed;
   if (active_peer_migration_type_ != NO_CHANGE &&
       sent_packet_manager_->GetLargestObserved(last_header_.path_id) >
           highest_packet_sent_before_peer_migration_) {
     OnPeerMigrationValidated(last_header_.path_id);
   }
+
   MaybeProcessUndecryptablePackets();
   MaybeSendInResponseToPacket();
   SetPingAlarm();
@@ -1344,6 +1362,8 @@ void QuicConnection::ProcessUdpPacket(const IPEndPoint& self_address,
 void QuicConnection::OnCanWrite() {
   DCHECK(!writer_->IsWriteBlocked());
 
+  //然后获取当前可用的拥塞窗口大小和流控窗口大小，并根据这些信息选择要发送的数据包，并进行拥塞控制和流控控制。
+  // 如果发送的数据包被阻塞，那么它们将会被放入一个发送缓冲区中，等待下次发送。如果发送的数据包成功发送，则会更新连接的状态和发送相关的参数。
   WriteQueuedPackets();
   WritePendingRetransmissions();
 
@@ -1380,6 +1400,7 @@ void QuicConnection::WriteIfNotBlocked() {
 
 void QuicConnection::WriteAndBundleAcksIfNotBlocked() {
   if (!writer_->IsWriteBlocked()) {
+      //把ack也带上.
     ScopedPacketBundler bundler(this, SEND_ACK_IF_QUEUED);
     OnCanWrite();
   }
@@ -1607,10 +1628,12 @@ bool QuicConnection::WritePacket(SerializedPacket* packet) {
                     ConnectionCloseBehavior::SEND_CONNECTION_CLOSE_PACKET);
     return true;
   }
+
   if (ShouldDiscardPacket(*packet)) {
     ++stats_.packets_discarded;
     return true;
   }
+
   // Termination packets are encrypted and saved, so don't exit early.
   const bool is_termination_packet = IsTerminationPacket(*packet);
   if (writer_->IsWriteBlocked() && !is_termination_packet) {
@@ -1657,30 +1680,39 @@ bool QuicConnection::WritePacket(SerializedPacket* packet) {
   // Measure the RTT from before the write begins to avoid underestimating the
   // min_rtt_, especially in cases where the thread blocks or gets swapped out
   // during the WritePacket below.
+
   QuicTime packet_send_time = clock_->Now();
+  //将数据写入到socket
   WriteResult result = writer_->WritePacket(
       packet->encrypted_buffer, encrypted_length, self_address().address(),
       peer_address(), per_packet_options_);
+
   if (result.error_code == ERR_IO_PENDING) {
     DCHECK_EQ(WRITE_STATUS_BLOCKED, result.status);
   }
 
+  //如果socket写入被阻塞
   if (result.status == WRITE_STATUS_BLOCKED) {
     visitor_->OnWriteBlocked();
     // If the socket buffers the the data, then the packet should not
     // be queued and sent again, which would result in an unnecessary
     // duplicate packet being sent.  The helper must call OnCanWrite
     // when the write completes, and OnWriteError if an error occurs.
+    //写入失败,并且socket实现不支持buffer和retry,则返回false到上层.
     if (!writer_->IsWriteBlockedDataBuffered()) {
       return false;
     }
   }
+
+  //如果socket写入成功
   if (result.status != WRITE_STATUS_ERROR && debug_visitor_ != nullptr) {
     // Pass the write result to the visitor.
     debug_visitor_->OnPacketSent(*packet, packet->original_path_id,
                                  packet->original_packet_number,
                                  packet->transmission_type, packet_send_time);
   }
+
+  //更新后续的状态
   if (packet->transmission_type == NOT_RETRANSMISSION) {
     time_of_last_sent_new_packet_ = packet_send_time;
     if (!FLAGS_quic_better_last_send_for_timeout) {
@@ -1700,6 +1732,8 @@ bool QuicConnection::WritePacket(SerializedPacket* packet) {
       last_send_for_timeout_ = packet_send_time;
     }
   }
+
+
   SetPingAlarm();
   MaybeSetMtuAlarm();
   DVLOG(1) << ENDPOINT << "time we began writing last sent packet: "
@@ -1730,6 +1764,7 @@ bool QuicConnection::WritePacket(SerializedPacket* packet) {
         sent_packet_manager_->EstimateMaxPacketsInFlight(max_packet_length()));
   }
 
+  //统计
   stats_.bytes_sent += result.bytes_written;
   ++stats_.packets_sent;
   if (packet->transmission_type != NOT_RETRANSMISSION) {
@@ -1749,6 +1784,7 @@ bool QuicConnection::WritePacket(SerializedPacket* packet) {
     return true;
   }
 
+  //如果socket写入错误
   if (result.status == WRITE_STATUS_ERROR) {
     OnWriteError(result.error_code);
     DLOG(ERROR) << ENDPOINT << "failed writing " << encrypted_length
@@ -2003,9 +2039,12 @@ void QuicConnection::MaybeProcessUndecryptablePackets() {
     return;
   }
 
+
+  //尝试解码之前未解码的packet
   while (connected_ && !undecryptable_packets_.empty()) {
     DVLOG(1) << ENDPOINT << "Attempting to process undecryptable packet";
     QuicEncryptedPacket* packet = undecryptable_packets_.front();
+    //处理未解码packet
     if (!framer_.ProcessPacket(*packet) &&
         framer_.error() == QUIC_DECRYPTION_FAILURE) {
       DVLOG(1) << ENDPOINT << "Unable to process undecryptable packet...";
@@ -2020,6 +2059,7 @@ void QuicConnection::MaybeProcessUndecryptablePackets() {
   // Once forward secure encryption is in use, there will be no
   // new keys installed and hence any undecryptable packets will
   // never be able to be decrypted.
+  //如果已经握手完成,还无法解码,则直接丢弃吧.
   if (encryption_level_ == ENCRYPTION_FORWARD_SECURE) {
     if (debug_visitor_ != nullptr) {
       // TODO(rtenneti): perhaps more efficient to pass the number of
@@ -2162,11 +2202,13 @@ bool QuicConnection::CanWriteStreamData() {
 
 void QuicConnection::SetNetworkTimeouts(QuicTime::Delta handshake_timeout,
                                         QuicTime::Delta idle_timeout) {
+
   QUIC_BUG_IF(idle_timeout > handshake_timeout)
       << "idle_timeout:" << idle_timeout.ToMilliseconds()
       << " handshake_timeout:" << handshake_timeout.ToMilliseconds();
   // Adjust the idle timeout on client and server to prevent clients from
   // sending requests to servers which have already closed the connection.
+  //让server包括时间长一点?
   if (perspective_ == Perspective::IS_SERVER) {
     idle_timeout = idle_timeout + QuicTime::Delta::FromSeconds(3);
   } else if (idle_timeout > QuicTime::Delta::FromSeconds(1)) {
@@ -2219,6 +2261,8 @@ void QuicConnection::CheckForTimeout() {
 }
 
 void QuicConnection::SetTimeoutAlarm() {
+
+    //首先得到最近的报文时间 time_of_last_packet ,即接收或发送的最新报文的时间
   QuicTime time_of_last_packet =
       max(time_of_last_received_packet_, time_of_last_sent_new_packet_);
   if (FLAGS_quic_better_last_send_for_timeout) {
@@ -2226,6 +2270,7 @@ void QuicConnection::SetTimeoutAlarm() {
         max(time_of_last_received_packet_, last_send_for_timeout_);
   }
 
+  //然后计算连接空闲超时时间 idle_network_timeout_ 后的截止时间 deadline
   QuicTime deadline = time_of_last_packet + idle_network_timeout_;
   if (!handshake_timeout_.IsInfinite()) {
     deadline =
@@ -2282,6 +2327,7 @@ void QuicConnection::MaybeSetMtuAlarm() {
   }
 }
 
+//将ack加入到ouput packet
 QuicConnection::ScopedPacketBundler::ScopedPacketBundler(
     QuicConnection* connection,
     AckBundling ack_mode)
@@ -2297,10 +2343,12 @@ QuicConnection::ScopedPacketBundler::ScopedPacketBundler(
     DVLOG(2) << "Entering Batch Mode.";
     connection_->packet_generator_.StartBatchOperations();
   }
+  //判断是否应该发送ack了.
   if (ShouldSendAck(ack_mode)) {
     DVLOG(1) << "Bundling ack with outgoing packet.";
     DCHECK(ack_mode == SEND_ACK || connection_->ack_frame_updated() ||
            connection_->stop_waiting_count_ > 1);
+    //发送ack
     connection_->SendAck();
   }
 }
@@ -2312,6 +2360,8 @@ bool QuicConnection::ScopedPacketBundler::ShouldSendAck(
       return true;
     case SEND_ACK_IF_QUEUED:
       return connection_->ack_queued();
+      //应该发送数据包
+      //是否已有 ACK 报文在等待发送，以及是否有多个数据包需要确认
     case SEND_ACK_IF_PENDING:
       return connection_->ack_alarm_->IsSet() ||
              connection_->stop_waiting_count_ > 1;

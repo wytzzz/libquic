@@ -87,6 +87,7 @@ void ReliableQuicStream::OnStreamFrame(const QuicStreamFrame& frame) {
 
   DCHECK(!(read_side_closed_ && write_side_closed_));
 
+  //收到fin frame
   if (frame.fin) {
     fin_received_ = true;
     if (fin_sent_) {
@@ -322,6 +323,7 @@ QuicConsumedData ReliableQuicStream::WritevData(
     if (!fin_with_zero_data) {
       MaybeSendBlocked();
     }
+    //发送fin
     if (fin && consumed_data.fin_consumed) {
       fin_sent_ = true;
       if (fin_received_) {

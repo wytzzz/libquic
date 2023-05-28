@@ -154,6 +154,7 @@ bool QuicUtils::FindMutualTag(const QuicTagVector& our_tags_vector,
 
   for (size_t i = 0; i < num_priority_tags; i++) {
     for (size_t j = 0; j < num_inferior_tags; j++) {
+      //找到相同的tags
       if (priority_tags[i] == inferior_tags[j]) {
         *out_result = priority_tags[i];
         if (out_index) {

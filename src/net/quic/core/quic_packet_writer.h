@@ -52,6 +52,7 @@ class NET_EXPORT_PRIVATE QuicPacketWriter {
   // Returns true if the writer buffers and subsequently rewrites data
   // when an attempt to write results in the underlying socket becoming
   // write blocked.
+  //。这个函数的作用是判断在写入数据时，当底层的套接字（socket）变为写入阻塞状态时，网络编程库是否会将数据缓存起来，并在后续重试写入。
   virtual bool IsWriteBlockedDataBuffered() const = 0;
 
   // Returns true if the network socket is not writable.

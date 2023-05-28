@@ -79,6 +79,7 @@ class NET_EXPORT_PRIVATE QuicWriteBlockedList {
       return kHeadersStreamId;
     }
 
+    //找到优先级最高的stream.
     const auto id_and_precedence =
         priority_write_scheduler_.PopNextReadyStreamAndPrecedence();
     const QuicStreamId id = std::get<0>(id_and_precedence);

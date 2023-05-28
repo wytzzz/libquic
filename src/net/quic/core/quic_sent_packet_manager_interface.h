@@ -61,6 +61,7 @@ class NET_EXPORT_PRIVATE QuicSentPacketManagerInterface {
 
   virtual ~QuicSentPacketManagerInterface() {}
 
+  //设置config
   virtual void SetFromConfig(const QuicConfig& config) = 0;
 
   // Resumes connection state on the default path.

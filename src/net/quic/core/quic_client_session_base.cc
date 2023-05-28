@@ -199,6 +199,7 @@ void QuicClientSessionBase::ResetPromised(QuicStreamId id,
   SendRstStream(id, error_code, 0);
   if (!IsOpenStream(id)) {
     MaybeIncreaseLargestPeerStreamId(id);
+    //增加中间态记录
     InsertLocallyClosedStreamsHighestOffset(id, 0);
   }
 }

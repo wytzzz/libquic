@@ -112,6 +112,8 @@ QUIC_FLAG(bool, FLAGS_quic_postpone_multipath_flag_validation, true)
 // If true, set a QUIC connection's last_sent_for_timeout_ to the send time of
 // the first packet sent after receiving a packet, even if the sent packet is
 // a retransmission
+//连接在收到报文后,无论下一个发送的是新报文还是重传,最后发送的时间都会记录在 last_send_for_timeout_ 中
+//从而更精准地判断最近有报文活动的时间
 QUIC_FLAG(bool, FLAGS_quic_better_last_send_for_timeout, true)
 
 // If true, send an explicit TTL in QUIC REJ messages to mitigate client clock

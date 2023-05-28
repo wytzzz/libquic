@@ -115,6 +115,7 @@ class ValidateClientHelloHelper {
   DISALLOW_COPY_AND_ASSIGN(ValidateClientHelloHelper);
 };
 
+
 class VerifyNonceIsValidAndUniqueCallback
     : public StrikeRegisterClient::ResultCallback {
  public:

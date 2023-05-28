@@ -178,6 +178,7 @@ void QuicCryptoServerStream::FinishProcessingHandshakeMessage(
   // session config.
   QuicConfig* config = session()->config();
   OverrideQuicConfigDefaults(config);
+  //server 参数协商
   error = config->ProcessPeerHello(message, CLIENT, &error_details);
   if (error != QUIC_NO_ERROR) {
     CloseConnectionWithDetails(error, error_details);

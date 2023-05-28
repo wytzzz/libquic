@@ -33,11 +33,12 @@ QuicPacketGenerator::~QuicPacketGenerator() {
 }
 
 void QuicPacketGenerator::SetShouldSendAck(bool also_send_stop_waiting) {
+
   if (packet_creator_.has_ack()) {
     // Ack already queued, nothing to do.
     return;
   }
-
+  //如果需要发送停止等待帧，同时已经有一个停止等待帧被排队等待发送了，那么这是一个错误的状态，应该报告一个 bug 并返回
   if (also_send_stop_waiting && packet_creator_.has_stop_waiting()) {
     QUIC_BUG << "Should only ever be one pending stop waiting frame.";
     return;
@@ -45,6 +46,7 @@ void QuicPacketGenerator::SetShouldSendAck(bool also_send_stop_waiting) {
 
   should_send_ack_ = true;
   should_send_stop_waiting_ = also_send_stop_waiting;
+  //方法将已经排队的数据帧发送出去，如果 flush 参数为 false，则数据帧会被缓存到发送队列中，等待下一次发送。
   SendQueuedFrames(/*flush=*/false);
 }
 
@@ -53,6 +55,8 @@ void QuicPacketGenerator::AddControlFrame(const QuicFrame& frame) {
   SendQueuedFrames(/*flush=*/false);
 }
 
+//消费数据
+//将app_data拆分为packet->frame的结构发送
 QuicConsumedData QuicPacketGenerator::ConsumeData(
     QuicStreamId id,
     QuicIOVector iov,
@@ -64,6 +68,8 @@ QuicConsumedData QuicPacketGenerator::ConsumeData(
       << "Handshake packets should never send a fin";
   // To make reasoning about crypto frames easier, we don't combine them with
   // other retransmittable frames in a single packet.
+
+  //将需要加密的frame分开序列化
   const bool flush =
       has_handshake && packet_creator_.HasPendingRetransmittableFrames();
   SendQueuedFrames(flush);
@@ -71,6 +77,7 @@ QuicConsumedData QuicPacketGenerator::ConsumeData(
   size_t total_bytes_consumed = 0;
   bool fin_consumed = false;
 
+  //检查是否有足够的空间来写入当前数据流的数据，如果没有，则将之前的数据包发送出去。
   if (!packet_creator_.HasRoomForStreamFrame(id, offset)) {
     packet_creator_.Flush();
   }
@@ -80,9 +87,11 @@ QuicConsumedData QuicPacketGenerator::ConsumeData(
     return QuicConsumedData(0, false);
   }
 
+  //写入数据到数据包中
   while (delegate_->ShouldGeneratePacket(
       HAS_RETRANSMITTABLE_DATA, has_handshake ? IS_HANDSHAKE : NOT_HANDSHAKE)) {
     QuicFrame frame;
+    //生成一帧frame
     if (!packet_creator_.ConsumeData(id, iov, total_bytes_consumed,
                                      offset + total_bytes_consumed, fin,
                                      has_handshake, &frame)) {
@@ -95,17 +104,22 @@ QuicConsumedData QuicPacketGenerator::ConsumeData(
     // A stream frame is created and added.
     size_t bytes_consumed = frame.stream_frame->data_length;
     if (listener != nullptr) {
+      //添加ack监听.
       packet_creator_.AddAckListener(listener, bytes_consumed);
     }
+
+    //split frame
     total_bytes_consumed += bytes_consumed;
     fin_consumed = fin && total_bytes_consumed == iov.total_length;
     DCHECK(total_bytes_consumed == iov.total_length ||
            (bytes_consumed > 0 && packet_creator_.HasPendingFrames()));
 
+    //非batch立即打包发送.
     if (!InBatchMode()) {
       packet_creator_.Flush();
     }
 
+    //已经发送完
     if (total_bytes_consumed == iov.total_length) {
       // We're done writing the data. Exit the loop.
       // We don't make this a precondition because we could have 0 bytes of data
@@ -117,11 +131,13 @@ QuicConsumedData QuicPacketGenerator::ConsumeData(
   }
 
   // Don't allow the handshake to be bundled with other retransmittable frames.
+  //包含加密帧则直接发送
   if (has_handshake) {
     SendQueuedFrames(/*flush=*/true);
   }
 
   DCHECK(InBatchMode() || !packet_creator_.HasPendingFrames());
+  //返回结果
   return QuicConsumedData(total_bytes_consumed, fin_consumed);
 }
 
@@ -179,8 +195,10 @@ void QuicPacketGenerator::GenerateMtuDiscoveryPacket(
   SetMaxPacketLength(current_mtu);
 }
 
+//判断是否还能往packet添加数据包
 bool QuicPacketGenerator::CanSendWithNextPendingFrameAddition() const {
   DCHECK(HasPendingFrames());
+
   HasRetransmittableData retransmittable =
       (should_send_ack_ || should_send_stop_waiting_)
           ? NO_RETRANSMITTABLE_DATA
@@ -188,15 +206,22 @@ bool QuicPacketGenerator::CanSendWithNextPendingFrameAddition() const {
   if (retransmittable == HAS_RETRANSMITTABLE_DATA) {
     DCHECK(!queued_control_frames_.empty());  // These are retransmittable.
   }
+
+
+  //生成ack frame
   return delegate_->ShouldGeneratePacket(retransmittable, NOT_HANDSHAKE);
 }
 
 void QuicPacketGenerator::SendQueuedFrames(bool flush) {
   // Only add pending frames if we are SURE we can then send the whole packet.
+  //查看是否有pending frame.
+  //否有待发送的数据帧（即有没有 pending frame），如果有，则将下一个待发送的数据帧添加到数据包中，直到不能再添加为止。
   while (HasPendingFrames() &&
          (flush || CanSendWithNextPendingFrameAddition())) {
+    //
     AddNextPendingFrame();
   }
+  //如果设置了 flush 参数或者不在批处理模式中，就会packet发送出去。
   if (flush || !InBatchMode()) {
     packet_creator_.Flush();
   }
@@ -233,12 +258,15 @@ bool QuicPacketGenerator::HasPendingFrames() const {
 }
 
 bool QuicPacketGenerator::AddNextPendingFrame() {
+
+
+  //发送ack
   if (should_send_ack_) {
     should_send_ack_ =
         !packet_creator_.AddSavedFrame(delegate_->GetUpdatedAckFrame());
     return !should_send_ack_;
   }
-
+  //发送stop_waiting
   if (should_send_stop_waiting_) {
     delegate_->PopulateStopWaitingFrame(&pending_stop_waiting_frame_);
     // If we can't this add the frame now, then we still need to do so later.
@@ -251,6 +279,7 @@ bool QuicPacketGenerator::AddNextPendingFrame() {
 
   QUIC_BUG_IF(queued_control_frames_.empty())
       << "AddNextPendingFrame called with no queued control frames.";
+  //添加控制frame
   if (!packet_creator_.AddSavedFrame(queued_control_frames_.back())) {
     // Packet was full.
     return false;

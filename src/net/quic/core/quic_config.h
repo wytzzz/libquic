@@ -19,6 +19,8 @@ namespace test {
 class QuicConfigPeer;
 }  // namespace test
 
+
+//握手消息类
 class CryptoHandshakeMessage;
 
 // Describes whether or not a given QuicTag is required or optional in the
@@ -40,6 +42,8 @@ enum HelloType {
 
 // An abstract base class that stores a value that can be sent in CHLO/SHLO
 // message. These values can be OPTIONAL or REQUIRED, depending on |presence_|.
+
+//协商参数的基类
 class NET_EXPORT_PRIVATE QuicConfigValue {
  public:
   QuicConfigValue(QuicTag tag, QuicConfigPresence presence);
@@ -60,6 +64,8 @@ class NET_EXPORT_PRIVATE QuicConfigValue {
   const QuicConfigPresence presence_;
 };
 
+
+//可协商参数
 class NET_EXPORT_PRIVATE QuicNegotiableValue : public QuicConfigValue {
  public:
   QuicNegotiableValue(QuicTag tag, QuicConfigPresence presence);
@@ -141,11 +147,13 @@ class NET_EXPORT_PRIVATE QuicNegotiableTag : public QuicNegotiableValue {
                            size_t* out_length,
                            std::string* error_details) const;
 
-  QuicTag negotiated_tag_;
-  QuicTagVector possible_values_;
+  QuicTag negotiated_tag_;  //
+  QuicTagVector possible_values_;  //local tags
   QuicTag default_value_;
 };
 
+
+//不可协商参数
 // Stores uint32_t from CHLO or SHLO messages that are not negotiated.
 class NET_EXPORT_PRIVATE QuicFixedUint32 : public QuicConfigValue {
  public:
@@ -419,6 +427,7 @@ class NET_EXPORT_PRIVATE QuicConfig {
   // Connection options.
   QuicFixedTagVector connection_options_;
   // Idle connection state lifetime
+  //由发送接收双方协商的最大空闲时间.
   QuicNegotiableUint32 idle_connection_state_lifetime_seconds_;
   // Whether to use silent close.  Defaults to 0 (false) and is otherwise true.
   QuicNegotiableUint32 silent_close_;

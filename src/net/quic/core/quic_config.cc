@@ -86,6 +86,7 @@ void QuicNegotiableUint32::ToHandshakeMessage(
   }
 }
 
+//协商单个参数
 QuicErrorCode QuicNegotiableUint32::ProcessPeerHello(
     const CryptoHandshakeMessage& peer_hello,
     HelloType hello_type,
@@ -166,12 +167,15 @@ QuicErrorCode QuicNegotiableTag::ProcessPeerHello(
   DCHECK(error_details != nullptr);
   const QuicTag* received_tags;
   size_t received_tags_length;
+
+  //读取对端的hello
   QuicErrorCode error = ReadVector(peer_hello, &received_tags,
                                    &received_tags_length, error_details);
   if (error != QUIC_NO_ERROR) {
     return error;
   }
 
+  //server
   if (hello_type == SERVER) {
     if (received_tags_length != 1 ||
         !ContainsQuicTag(possible_values_, *received_tags)) {
@@ -179,8 +183,13 @@ QuicErrorCode QuicNegotiableTag::ProcessPeerHello(
       return QUIC_INVALID_NEGOTIATED_VALUE;
     }
     negotiated_tag_ = *received_tags;
+  //client
   } else {
+
     QuicTag negotiated_tag;
+
+    //具体来说，这个函数会比较收到的Hello消息中的标签和本地支持的标签（possible_values_），然后选择一个共同支持的标签作为协商后的标签（negotiated_tag_）。
+    // 如果本地支持的标签中有多个与收到的Hello消息中的标签匹配，那么函数会按照优先级选择本地支持的标签中的标签作为协商后的标签。
     if (!QuicUtils::FindMutualTag(
             possible_values_, received_tags, received_tags_length,
             QuicUtils::LOCAL_PRIORITY, &negotiated_tag, nullptr)) {
@@ -703,6 +712,7 @@ QuicErrorCode QuicConfig::ProcessPeerHello(
     string* error_details) {
   DCHECK(error_details != nullptr);
 
+  //
   QuicErrorCode error = QUIC_NO_ERROR;
   if (error == QUIC_NO_ERROR) {
     error = idle_connection_state_lifetime_seconds_.ProcessPeerHello(

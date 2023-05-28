@@ -272,6 +272,7 @@ bool QuicFramer::IsSupportedVersion(const QuicVersion version) const {
   return false;
 }
 
+
 size_t QuicFramer::GetSerializedFrameLength(
     const QuicFrame& frame,
     size_t free_bytes,
@@ -289,6 +290,8 @@ size_t QuicFramer::GetSerializedFrameLength(
     visitor_->OnError(this);
     return 0;
   }
+
+  //pading farme的长度,根据是否指定了padding长度生成frame
   if (frame.type == PADDING_FRAME) {
     if (frame.padding_frame.num_padding_bytes == -1) {
       // Full padding to the end of the packet.
@@ -302,6 +305,8 @@ size_t QuicFramer::GetSerializedFrameLength(
     }
   }
 
+
+  //如果该帧序列化后的长度小于等于当前可用空间大小，则说明该帧可以完整地写入数据包中，因此返回该帧的序列化后的长度。
   size_t frame_len =
       ComputeFrameLength(frame, last_frame, packet_number_length);
   if (frame_len <= free_bytes) {
@@ -310,9 +315,15 @@ size_t QuicFramer::GetSerializedFrameLength(
   }
   // Only truncate the first frame in a packet, so if subsequent ones go
   // over, stop including more frames.
+
+  //如果该帧序列化后的长度大于当前可用空间大小，则需要将该帧进行截断。
+  //如果该帧是数据包中的第一个帧，则可以尝试将该帧进行截断，以使得剩余的帧可以写入数据包中；
+  //否则直接返回 0，表示该帧无法写入数据包中。
   if (!first_frame) {
     return 0;
   }
+
+  //如果是ack frame,则尝试截断ack frame.
   bool can_truncate =
       frame.type == ACK_FRAME &&
       free_bytes >=
@@ -353,10 +364,13 @@ QuicPacketEntropyHash QuicFramer::GetPacketEntropyHash(
   return header.entropy_flag << (header.packet_number % 8);
 }
 
+//将frame序列到化为frame
 size_t QuicFramer::BuildDataPacket(const QuicPacketHeader& header,
                                    const QuicFrames& frames,
                                    char* buffer,
                                    size_t packet_length) {
+
+  //序列化packet_header
   QuicDataWriter writer(packet_length, buffer);
   if (!AppendPacketHeader(header, &writer)) {
     QUIC_BUG << "AppendPacketHeader failed";
@@ -364,18 +378,23 @@ size_t QuicFramer::BuildDataPacket(const QuicPacketHeader& header,
   }
 
   size_t i = 0;
+  //序列化frame
   for (const QuicFrame& frame : frames) {
     // Determine if we should write stream frame length in header.
     const bool no_stream_frame_length = i == frames.size() - 1;
+    //填充frame type
     if (!AppendTypeByte(frame, no_stream_frame_length, &writer)) {
       QUIC_BUG << "AppendTypeByte failed";
       return 0;
     }
 
+    //根据类型序列化frame.
     switch (frame.type) {
+        //padding
       case PADDING_FRAME:
         writer.WritePadding();
         break;
+
       case STREAM_FRAME:
         if (!AppendStreamFrame(*frame.stream_frame, no_stream_frame_length,
                                &writer)) {
@@ -540,6 +559,7 @@ bool QuicFramer::ProcessPacket(const QuicEncryptedPacket& packet) {
   visitor_->OnPacket();
 
   // First parse the public header.
+  //解析公共头
   QuicPacketPublicHeader public_header;
   if (!ProcessPublicHeader(&reader, &public_header)) {
     DLOG(WARNING) << "Unable to process public header.";
@@ -559,11 +579,15 @@ bool QuicFramer::ProcessPacket(const QuicEncryptedPacket& packet) {
     }
   }
 
+  //根据flag处理不同类型的数据包
   bool rv;
+  //version协商包
   if (perspective_ == Perspective::IS_CLIENT && public_header.version_flag) {
     rv = ProcessVersionNegotiationPacket(&reader, &public_header);
+    //reset packet
   } else if (public_header.reset_flag) {
     rv = ProcessPublicResetPacket(&reader, public_header);
+    //正常的数据包 1rtt or 0rtt
   } else if (packet.length() <= kMaxPacketSize) {
     // The optimized decryption algorithm implementations run faster when
     // operating on aligned memory.
@@ -571,6 +595,7 @@ bool QuicFramer::ProcessPacket(const QuicEncryptedPacket& packet) {
     // TODO(rtenneti): Change the default 64 alignas value (used the default
     // value from CACHELINE_SIZE).
     ALIGNAS(64) char buffer[kMaxPacketSize];
+    //解码packet
     rv = ProcessDataPacket(&reader, public_header, packet, buffer,
                            kMaxPacketSize);
   } else {
@@ -602,17 +627,20 @@ bool QuicFramer::ProcessVersionNegotiationPacket(
   return true;
 }
 
+//读取packet的payload字段解析为frame
 bool QuicFramer::ProcessDataPacket(QuicDataReader* encrypted_reader,
                                    const QuicPacketPublicHeader& public_header,
                                    const QuicEncryptedPacket& packet,
                                    char* decrypted_buffer,
                                    size_t buffer_length) {
   QuicPacketHeader header(public_header);
+  //解析包头的非公共字段
   if (!ProcessUnauthenticatedHeader(encrypted_reader, &header)) {
     DLOG(WARNING) << "Unable to process packet header.  Stopping parsing.";
     return false;
   }
 
+  //解码
   size_t decrypted_length = 0;
   if (!DecryptPayload(encrypted_reader, header, packet, decrypted_buffer,
                       buffer_length, &decrypted_length)) {
@@ -620,8 +648,10 @@ bool QuicFramer::ProcessDataPacket(QuicDataReader* encrypted_reader,
     return RaiseError(QUIC_DECRYPTION_FAILURE);
   }
 
+  //进一步解析header的剩余字段
   QuicDataReader reader(decrypted_buffer, decrypted_length);
   if (quic_version_ <= QUIC_VERSION_33) {
+
     if (!ProcessAuthenticatedHeader(&reader, &header)) {
       DLOG(WARNING) << "Unable to process packet header.  Stopping parsing.";
       return false;
@@ -643,6 +673,7 @@ bool QuicFramer::ProcessDataPacket(QuicDataReader* encrypted_reader,
     return RaiseError(QUIC_PACKET_TOO_LARGE);
   }
 
+  //将payload解析为frame
   DCHECK(!header.fec_flag);
   // Handle the payload.
   if (!ProcessFrameData(&reader, header)) {
@@ -884,6 +915,7 @@ QuicPacketNumber QuicFramer::CalculatePacketNumberFromWire(
 bool QuicFramer::ProcessPublicHeader(QuicDataReader* reader,
                                      QuicPacketPublicHeader* public_header) {
   uint8_t public_flags;
+  //public_flags
   if (!reader->ReadBytes(&public_flags, 1)) {
     set_detailed_error("Unable to read public flags.");
     return false;
@@ -900,6 +932,7 @@ bool QuicFramer::ProcessPublicHeader(QuicDataReader* reader,
     set_detailed_error("Illegal public flags value.");
     return false;
   }
+
 
   if (public_header->reset_flag && public_header->version_flag) {
     set_detailed_error("Got version flag in reset packet");
@@ -1065,7 +1098,9 @@ QuicFramer::NewAckFrameInfo QuicFramer::GetNewAckFrameInfo(
 
 bool QuicFramer::ProcessUnauthenticatedHeader(QuicDataReader* encrypted_reader,
                                               QuicPacketHeader* header) {
-  header->path_id = kDefaultPathId;
+
+    header->path_id = kDefaultPathId;
+    //解析path_id
   if (header->public_header.multipath_flag &&
       !ProcessPathId(encrypted_reader, &header->path_id)) {
     set_detailed_error("Unable to read path id.");
@@ -1081,6 +1116,7 @@ bool QuicFramer::ProcessUnauthenticatedHeader(QuicDataReader* encrypted_reader,
     return false;
   }
 
+  //解析packet num
   if (!ProcessPacketSequenceNumber(
           encrypted_reader, header->public_header.packet_number_length,
           base_packet_number, &header->packet_number)) {
@@ -1102,6 +1138,7 @@ bool QuicFramer::ProcessUnauthenticatedHeader(QuicDataReader* encrypted_reader,
 bool QuicFramer::ProcessAuthenticatedHeader(QuicDataReader* reader,
                                             QuicPacketHeader* header) {
   uint8_t private_flags;
+  //private flag
   if (!reader->ReadBytes(&private_flags, 1)) {
     set_detailed_error("Unable to read private flags.");
     return RaiseError(QUIC_INVALID_PACKET_HEADER);
@@ -1122,12 +1159,14 @@ bool QuicFramer::ProcessAuthenticatedHeader(QuicDataReader* reader,
   header->entropy_flag = (private_flags & PACKET_PRIVATE_FLAGS_ENTROPY) != 0;
   header->fec_flag = (private_flags & PACKET_PRIVATE_FLAGS_FEC) != 0;
 
+
   if ((private_flags & PACKET_PRIVATE_FLAGS_FEC_GROUP) != 0) {
     uint8_t first_fec_protected_packet_offset;
     if (!reader->ReadBytes(&first_fec_protected_packet_offset, 1)) {
       set_detailed_error("Unable to read first fec protected packet offset.");
       return RaiseError(QUIC_INVALID_PACKET_HEADER);
     }
+    //fec保护数据包的offset.
     if (first_fec_protected_packet_offset >= header->packet_number) {
       set_detailed_error(
           "First fec protected packet offset must be less "
@@ -1136,6 +1175,7 @@ bool QuicFramer::ProcessAuthenticatedHeader(QuicDataReader* reader,
     }
   }
 
+  //获取hash
   header->entropy_hash = GetPacketEntropyHash(*header);
   return true;
 }
@@ -1171,17 +1211,21 @@ bool QuicFramer::ProcessFrameData(QuicDataReader* reader,
     set_detailed_error("Packet has no frames.");
     return RaiseError(QUIC_MISSING_PAYLOAD);
   }
+
   while (!reader->IsDoneReading()) {
     uint8_t frame_type;
+    //读取frame_type
     if (!reader->ReadBytes(&frame_type, 1)) {
       set_detailed_error("Unable to read frame type.");
       return RaiseError(QUIC_INVALID_FRAME_DATA);
     }
 
+    //处理不同的frame type
     if (frame_type & kQuicFrameTypeSpecialMask) {
       // Stream Frame
       if (frame_type & kQuicFrameTypeStreamMask) {
         QuicStreamFrame frame;
+        //处理 stream frame
         if (!ProcessStreamFrame(reader, frame_type, &frame)) {
           return RaiseError(QUIC_INVALID_STREAM_DATA);
         }
@@ -1197,6 +1241,7 @@ bool QuicFramer::ProcessFrameData(QuicDataReader* reader,
       if (frame_type & kQuicFrameTypeAckMask) {
         QuicAckFrame frame;
         if (quic_version_ <= QUIC_VERSION_33) {
+            //处理ack frame
           if (!ProcessAckFrame(reader, frame_type, &frame)) {
             return RaiseError(QUIC_INVALID_ACK_DATA);
           }
@@ -2012,10 +2057,12 @@ size_t QuicFramer::GetAckFrameSize(
   return ack_size;
 }
 
+//计算不同frame的长度
 size_t QuicFramer::ComputeFrameLength(
     const QuicFrame& frame,
     bool last_frame_in_packet,
     QuicPacketNumberLength packet_number_length) {
+
   switch (frame.type) {
     case STREAM_FRAME:
       return GetMinStreamFrameSize(frame.stream_frame->stream_id,

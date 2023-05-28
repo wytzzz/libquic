@@ -606,6 +606,8 @@ void QuicCryptoClientStream::DoReceiveSHLO(
     CloseConnectionWithDetails(error, "Server hello invalid: " + error_details);
     return;
   }
+
+  //client 参数协商
   error = session()->config()->ProcessPeerHello(*in, SERVER, &error_details);
   if (error != QUIC_NO_ERROR) {
     CloseConnectionWithDetails(error, "Server hello invalid: " + error_details);

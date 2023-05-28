@@ -272,6 +272,7 @@ class NET_EXPORT_PRIVATE QuicConnectionDebugVisitor
 // ordinarily be on the heap. Instead, store them inline in an arena.
 using QuicConnectionArena = QuicOneBlockArena<1024>;
 
+
 class NET_EXPORT_PRIVATE QuicConnectionHelperInterface {
  public:
   virtual ~QuicConnectionHelperInterface() {}
@@ -1022,14 +1023,23 @@ class NET_EXPORT_PRIVATE QuicConnection
 
   // The time that we got a packet for this connection.
   // This is used for timeouts, and does not indicate the packet was processed.
+  //接收的最新报文时间
   QuicTime time_of_last_received_packet_;
 
   // The last time this connection began sending a new (non-retransmitted)
   // packet.
+  //发送新报文的最新时间
   QuicTime time_of_last_sent_new_packet_;
 
   // The the send time of the first retransmittable packet sent after
   // |time_of_last_received_packet_|.
+  //连接在收到报文后,无论下一个发送的是新报文还是重传,最后发送的时间都会记录在 last_send_for_timeout_ 中
+  //从而更精准地判断最近有报文活动的时间
+  //用于更好地判断最近发送时间, (通过 FLAGS_quic_better_last_send_for_timeout 条件
+  //这对于设置连接的超时时间比较有帮助:
+  //即便重传报文,也说明连接仍然活跃,不应被突然回收。
+  //只要收到报文,并且在一段时间内有发送,则表明连接仍在使用。
+  //所以应使用最后发送时间作为判断基础,设置超时时间。
   QuicTime last_send_for_timeout_;
 
   // packet number of the last sent packet.  Packets are guaranteed to be sent

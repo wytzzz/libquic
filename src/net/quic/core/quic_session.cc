@@ -30,6 +30,8 @@ namespace net {
 #define ENDPOINT \
   (perspective() == Perspective::IS_SERVER ? "Server: " : " Client: ")
 
+
+//初始化
 QuicSession::QuicSession(QuicConnection* connection, const QuicConfig& config)
     : connection_(connection),
       config_(config),
@@ -42,6 +44,7 @@ QuicSession::QuicSession(QuicConnection* connection, const QuicConfig& config)
       num_draining_incoming_streams_(0),
       num_locally_closed_incoming_streams_highest_offset_(0),
       error_(QUIC_NO_ERROR),
+      //初始发送接收窗口
       flow_controller_(connection_,
                        0,
                        perspective(),
@@ -57,6 +60,7 @@ void QuicSession::Initialize() {
   DCHECK_EQ(kCryptoStreamId, GetCryptoStream()->id());
   static_stream_map_[kCryptoStreamId] = GetCryptoStream();
 }
+
 
 QuicSession::~QuicSession() {
   base::STLDeleteElements(&closed_streams_);
@@ -238,6 +242,7 @@ void QuicSession::ProcessUdpPacket(const IPEndPoint& self_address,
   connection_->ProcessUdpPacket(self_address, peer_address, packet);
 }
 
+//发送数据
 QuicConsumedData QuicSession::WritevData(
     ReliableQuicStream* stream,
     QuicStreamId id,
@@ -258,13 +263,17 @@ QuicConsumedData QuicSession::WritevData(
         ConnectionCloseBehavior::SEND_CONNECTION_CLOSE_PACKET);
     return QuicConsumedData(0, false);
   }
+
   if (!IsEncryptionEstablished() && id != kCryptoStreamId) {
     // Do not let streams write without encryption. The calling stream will end
     // up write blocked until OnCanWrite is next called.
     return QuicConsumedData(0, false);
   }
+
+  //通过connection发送数据
   QuicConsumedData data =
       connection_->SendStreamData(id, iov, offset, fin, ack_notifier_delegate);
+  //更新滑动窗口
   write_blocked_streams_.UpdateBytesForStream(id, data.bytes_consumed);
   return data;
 }
@@ -296,6 +305,7 @@ void QuicSession::CloseStream(QuicStreamId stream_id) {
   CloseStreamInner(stream_id, false);
 }
 
+
 void QuicSession::InsertLocallyClosedStreamsHighestOffset(
     const QuicStreamId id,
     QuicStreamOffset offset) {
@@ -323,21 +333,27 @@ void QuicSession::CloseStreamInner(QuicStreamId stream_id, bool locally_reset) {
     stream->set_rst_sent(true);
   }
 
+  //关闭流
   closed_streams_.push_back(it->second);
 
   // If we haven't received a FIN or RST for this stream, we need to keep track
   // of the how many bytes the stream's flow controller believes it has
   // received, for accurate connection level flow control accounting.
+
+  //记录中间态
   if (!stream->HasFinalReceivedByteOffset()) {
     InsertLocallyClosedStreamsHighestOffset(
         stream_id, stream->flow_controller()->highest_received_byte_offset());
   }
 
+  //从dynamic删除
   dynamic_stream_map_.erase(it);
   if (IsIncomingStream(stream_id)) {
     --num_dynamic_incoming_streams_;
   }
 
+
+  //从drain删除
   if (draining_streams_.find(stream_id) != draining_streams_.end() &&
       IsIncomingStream(stream_id)) {
     --num_draining_incoming_streams_;
@@ -349,6 +365,7 @@ void QuicSession::CloseStreamInner(QuicStreamId stream_id, bool locally_reset) {
   connection_->SetNumOpenStreams(dynamic_stream_map_.size());
 }
 
+//收到fin标志
 void QuicSession::UpdateFlowControlOnFinalReceivedByteOffset(
     QuicStreamId stream_id,
     QuicStreamOffset final_byte_offset) {
@@ -360,7 +377,9 @@ void QuicSession::UpdateFlowControlOnFinalReceivedByteOffset(
 
   DVLOG(1) << ENDPOINT << "Received final byte offset " << final_byte_offset
            << " for stream " << stream_id;
+
   QuicByteCount offset_diff = final_byte_offset - it->second;
+
   if (flow_controller_.UpdateHighestReceivedOffset(
           flow_controller_.highest_received_byte_offset() + offset_diff)) {
     // If the final offset violates flow control, close the connection now.
@@ -375,6 +394,7 @@ void QuicSession::UpdateFlowControlOnFinalReceivedByteOffset(
 
   flow_controller_.AddBytesConsumed(offset_diff);
   locally_closed_streams_highest_offset_.erase(it);
+  //更新中间态.
   if (IsIncomingStream(stream_id)) {
     --num_locally_closed_incoming_streams_highest_offset_;
   }
@@ -511,7 +531,9 @@ void QuicSession::OnCryptoHandshakeEvent(CryptoHandshakeEvent event) {
       OnCanWrite();
       break;
 
+      //接收到client hello
     case HANDSHAKE_CONFIRMED:
+        //验证已经经过了参数协商
       QUIC_BUG_IF(!config_.negotiated())
           << ENDPOINT << "Handshake confirmed without parameter negotiation.";
       // Discard originally encrypted packets, since they can't be decrypted by
@@ -564,6 +586,8 @@ ReliableQuicStream* QuicSession::GetOrCreateStream(
 
 void QuicSession::StreamDraining(QuicStreamId stream_id) {
   DCHECK(base::ContainsKey(dynamic_stream_map_, stream_id));
+
+  //将stream加入到drain中
   if (!base::ContainsKey(draining_streams_, stream_id)) {
     draining_streams_.insert(stream_id);
     if (IsIncomingStream(stream_id)) {
@@ -678,6 +702,7 @@ bool QuicSession::IsClosedStream(QuicStreamId id) {
     // Stream is active
     return false;
   }
+  //如果是本地创建的steam
   if (!IsIncomingStream(id)) {
     // Locally created streams are strictly in-order.  If the id is in the
     // range of created streams and it's not active, it must have been closed.
@@ -698,6 +723,8 @@ bool QuicSession::IsOpenStream(QuicStreamId id) {
   return false;
 }
 
+
+//未接收fin的流认为是open的.
 size_t QuicSession::GetNumOpenIncomingStreams() const {
   return num_dynamic_incoming_streams_ - num_draining_incoming_streams_ +
          num_locally_closed_incoming_streams_highest_offset_;
@@ -742,6 +769,7 @@ size_t QuicSession::GetNumDrainingOutgoingStreams() const {
   return draining_streams_.size() - num_draining_incoming_streams_;
 }
 
+//本地关闭的流 - 本地关闭的input流 = 本地关闭的output流
 size_t QuicSession::GetNumLocallyClosedOutgoingStreamsHighestOffset() const {
   return locally_closed_streams_highest_offset_.size() -
          num_locally_closed_incoming_streams_highest_offset_;

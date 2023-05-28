@@ -277,6 +277,7 @@ class NET_EXPORT_PRIVATE QuicPacketCreator {
   // Adds a |frame| if there is space and returns false and flushes all pending
   // frames if there isn't room. If |save_retransmittable_frames| is true,
   // saves the |frame| in the next SerializedPacket.
+  //添加 |frame|如果有空间，则返回 false，如果没有空间，则刷新所有挂起的帧。如果 |save_retransmittable_frames|为真，保存 |frame|在接下来的 SerializedPacket 中。
   bool AddFrame(const QuicFrame& frame, bool save_retransmittable_frames);
 
   // Adds a padding frame to the current packet only if the current packet

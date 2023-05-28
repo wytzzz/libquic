@@ -147,14 +147,14 @@ QuicStreamFrame::QuicStreamFrame(QuicStreamId stream_id,
                                  const char* data_buffer,
                                  QuicPacketLength data_length,
                                  UniqueStreamBuffer buffer)
-    : stream_id(stream_id),
-      fin(fin),
-      data_length(data_length),
-      data_buffer(data_buffer),
-      offset(offset),
-      buffer(std::move(buffer)) {
-  if (this->buffer != nullptr) {
-    DCHECK(data_buffer == nullptr);
+
+    DCHECK(data_buff    : stream_id(stream_id),
+            fin(fin),
+            data_length(data_length),
+            data_buffer(data_buffer),
+            offset(offset),
+            buffer(std::move(buffer)) {
+            if (this->buffer != nullptr) {er == nullptr);
     this->data_buffer = this->buffer.get();
   }
 }

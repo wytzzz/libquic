@@ -136,6 +136,7 @@ class NET_EXPORT_PRIVATE QuicSession : public QuicConnectionVisitorInterface {
   //   HANDSHAKE_CONFIRMED
   //
   // Servers will simply call it once with HANDSHAKE_CONFIRMED.
+  //握手状态回调
   virtual void OnCryptoHandshakeEvent(CryptoHandshakeEvent event);
 
   // Called by the QuicCryptoStream when a handshake message is sent.
@@ -165,14 +166,17 @@ class NET_EXPORT_PRIVATE QuicSession : public QuicConnectionVisitorInterface {
 
   // Returns the number of currently open streams, excluding the reserved
   // headers and crypto streams, and never counting unfinished streams.
+  //dynamic + drain
   virtual size_t GetNumActiveStreams() const;
 
   // Returns the number of currently open peer initiated streams, excluding the
   // reserved headers and crypto streams.
+  //包含当前打开的input流
   virtual size_t GetNumOpenIncomingStreams() const;
 
   // Returns the number of currently open self initiated streams, excluding the
   // reserved headers and crypto streams.
+
   virtual size_t GetNumOpenOutgoingStreams() const;
 
   // Returns the number of "available" streams, the stream ids less than
@@ -381,6 +385,7 @@ class NET_EXPORT_PRIVATE QuicSession : public QuicConnectionVisitorInterface {
   // Set of stream ids that are "draining" -- a FIN has been sent and received,
   // but the stream object still exists because not all the received data has
   // been consumed.
+  //已经成功收发fin的流.
   std::unordered_set<QuicStreamId> draining_streams_;
 
   // A list of streams which need to write more data.
@@ -389,13 +394,20 @@ class NET_EXPORT_PRIVATE QuicSession : public QuicConnectionVisitorInterface {
   QuicStreamId largest_peer_created_stream_id_;
 
   // A counter for peer initiated streams which are in the dynamic_stream_map_.
+  //活跃状态的流
   size_t num_dynamic_incoming_streams_;
 
   // A counter for peer initiated streams which are in the draining_streams_.
+  //已经关闭单位完全结束的流
+  //一个数据流完成时，它将从dynamic_incoming_streams列表中移除，并添加到draining_incoming_streams列表中，
+  // 以等待最后的数据包到达。一旦所有数据包都被接收到并确认，数据流就会从draining_incoming_streams列表中移除。
+
   size_t num_draining_incoming_streams_;
 
   // A counter for peer initiated streams which are in the
   // locally_closed_streams_highest_offset_.
+
+  //表示已经close,但是还在等待fin的in流.
   size_t num_locally_closed_incoming_streams_highest_offset_;
 
   // The latched error with which the connection was closed.

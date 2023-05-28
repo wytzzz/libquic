@@ -61,6 +61,7 @@ QuicPacketCreator::~QuicPacketCreator() {
 void QuicPacketCreator::SetEncrypter(EncryptionLevel level,
                                      QuicEncrypter* encrypter) {
   framer_->SetEncrypter(level, encrypter);
+  //最大明文size.
   max_plaintext_size_ = framer_->GetMaxPlaintextSize(max_packet_length_);
 }
 
@@ -137,6 +138,7 @@ void QuicPacketCreator::UpdatePacketNumberLength(
   }
 }
 
+//创建steam farme
 bool QuicPacketCreator::ConsumeData(QuicStreamId id,
                                     QuicIOVector iov,
                                     size_t iov_offset,
@@ -147,6 +149,8 @@ bool QuicPacketCreator::ConsumeData(QuicStreamId id,
   if (!HasRoomForStreamFrame(id, offset)) {
     return false;
   }
+
+  //生成QuicFrame
   CreateStreamFrame(id, iov, iov_offset, offset, fin, frame);
   // Explicitly disallow multi-packet CHLOs.
   if (id == kCryptoStreamId &&
@@ -165,6 +169,7 @@ bool QuicPacketCreator::ConsumeData(QuicStreamId id,
       return false;
     }
   }
+  //添加frame
   if (!AddFrame(*frame, /*save_retransmittable_frames=*/true)) {
     // Fails if we try to write unencrypted stream data.
     delete frame->stream_frame;
@@ -203,15 +208,19 @@ void QuicPacketCreator::CreateStreamFrame(QuicStreamId id,
                                           QuicStreamOffset offset,
                                           bool fin,
                                           QuicFrame* frame) {
+
+//首先，使用 DCHECK_GT 宏来检查当前数据包的最大长度（max_packet_length_）是否大于数据流帧头的开销，以确保数据流帧可以被容纳在当前数据包中。
   DCHECK_GT(max_packet_length_,
             StreamFramePacketOverhead(framer_->version(), connection_id_length_,
                                       kIncludeVersion, kIncludePathId,
                                       IncludeNonceInPublicHeader(),
                                       PACKET_6BYTE_PACKET_NUMBER, offset));
 
+
   if (!FLAGS_quic_simple_packet_number_length_2) {
     MaybeUpdatePacketNumberLength();
   }
+
   QUIC_BUG_IF(!HasRoomForStreamFrame(id, offset))
       << "No room for Stream frame, BytesFree: " << BytesFree()
       << " MinStreamFrameSize: "
@@ -224,6 +233,7 @@ void QuicPacketCreator::CreateStreamFrame(QuicStreamId id,
     return;
   }
 
+
   const size_t data_size = iov.total_length - iov_offset;
   size_t min_frame_size = QuicFramer::GetMinStreamFrameSize(
       id, offset, /* last_frame_in_packet= */ true);
@@ -232,7 +242,9 @@ void QuicPacketCreator::CreateStreamFrame(QuicStreamId id,
   bool set_fin = fin && bytes_consumed == data_size;  // Last frame.
   UniqueStreamBuffer buffer =
       NewStreamBuffer(buffer_allocator_, bytes_consumed);
+
   CopyToBuffer(iov, iov_offset, bytes_consumed, buffer.get());
+  //生成frame结构
   *frame = QuicFrame(new QuicStreamFrame(id, set_fin, offset, bytes_consumed,
                                          std::move(buffer)));
 }
@@ -349,7 +361,9 @@ void QuicPacketCreator::Flush() {
   // TODO(rtenneti): Change the default 64 alignas value (used the default
   // value from CACHELINE_SIZE).
   ALIGNAS(64) char seralized_packet_buffer[kMaxPacketSize];
+  //序列化一批frames
   SerializePacket(seralized_packet_buffer, kMaxPacketSize);
+  //通知上层.
   OnSerializedPacket();
 }
 
@@ -363,7 +377,9 @@ void QuicPacketCreator::OnSerializedPacket() {
     return;
   }
 
+  //通知上层
   delegate_->OnSerializedPacket(&packet_);
+  //清空packet
   ClearPacket();
   // Maximum packet size may be only enacted while no packet is currently being
   // constructed, so here we have a good opportunity to actually change it.
@@ -475,6 +491,7 @@ size_t QuicPacketCreator::ExpansionOnNewFrame() const {
   return has_trailing_stream_frame ? kQuicStreamPayloadLengthSize : 0;
 }
 
+//还剩多少剩余字节.
 size_t QuicPacketCreator::BytesFree() {
   DCHECK_GE(max_plaintext_size_, PacketSize());
   return max_plaintext_size_ -
@@ -482,6 +499,7 @@ size_t QuicPacketCreator::BytesFree() {
 }
 
 size_t QuicPacketCreator::PacketSize() {
+    //1.之前已经计算过,直接返回
   if (!queued_frames_.empty()) {
     return packet_size_;
   }
@@ -489,6 +507,8 @@ size_t QuicPacketCreator::PacketSize() {
   if (!FLAGS_quic_simple_packet_number_length_2) {
     packet_.packet_number_length = next_packet_number_length_;
   }
+
+  //
   packet_size_ = GetPacketHeaderSize(
       framer_->version(), connection_id_length_, send_version_in_packet_,
       send_path_id_in_packet_, IncludeNonceInPublicHeader(),
@@ -514,19 +534,25 @@ void QuicPacketCreator::AddAckListener(QuicAckListenerInterface* listener,
   packet_.listeners.emplace_back(listener, length);
 }
 
+
+//尝试序列化frames->packet
 void QuicPacketCreator::SerializePacket(char* encrypted_buffer,
                                         size_t encrypted_buffer_len) {
   DCHECK_LT(0u, encrypted_buffer_len);
   QUIC_BUG_IF(queued_frames_.empty()) << "Attempt to serialize empty packet";
   QuicPacketHeader header;
   // FillPacketHeader increments packet_number_.
+  //填充packet头部信息
   FillPacketHeader(&header);
 
+  //判断是否需要padding以配合加密算法.
   MaybeAddPadding();
 
   DCHECK_GE(max_plaintext_size_, packet_size_);
   // Use the packet_size_ instead of the buffer size to ensure smaller
   // packet sizes are properly used.
+
+  //frame->packet
   size_t length = framer_->BuildDataPacket(header, queued_frames_,
                                            encrypted_buffer, packet_size_);
   if (length == 0) {
@@ -546,6 +572,7 @@ void QuicPacketCreator::SerializePacket(char* encrypted_buffer,
   if (!possibly_truncated_by_length) {
     DCHECK_EQ(packet_size_, length);
   }
+  //加密
   const size_t encrypted_length = framer_->EncryptInPlace(
       packet_.encryption_level, packet_.path_id, packet_.packet_number,
       GetStartOfEncryptedData(framer_->version(), header), length,
@@ -555,6 +582,7 @@ void QuicPacketCreator::SerializePacket(char* encrypted_buffer,
     return;
   }
 
+  //保存packet
   packet_size_ = 0;
   queued_frames_.clear();
   packet_.entropy_hash = QuicFramer::GetPacketEntropyHash(header);
@@ -608,9 +636,13 @@ bool QuicPacketCreator::ShouldRetransmit(const QuicFrame& frame) {
   }
 }
 
+//将frame组packet,写入到queue_frame
+//具体来说，这个方法会检查是否可以将该数据帧添加到当前数据包中，
+//如果可以，则将该数据帧添加到队列中，并更新数据包的大小和状态等信息。如果当前数据包已经满了，则会将数据包发送出去，并创建一个新的数据包。
 bool QuicPacketCreator::AddFrame(const QuicFrame& frame,
                                  bool save_retransmittable_frames) {
   DVLOG(1) << "Adding frame: " << frame;
+  //如果添加的是一个 STREAM_FRAME 数据帧，并且当前数据包未加密，则会报告一个错误并返回 false。
   if (frame.type == STREAM_FRAME &&
       frame.stream_frame->stream_id != kCryptoStreamId &&
       packet_.encryption_level == ENCRYPTION_NONE) {
@@ -621,9 +653,13 @@ bool QuicPacketCreator::AddFrame(const QuicFrame& frame,
         ConnectionCloseSource::FROM_SELF);
     return false;
   }
+
   if (!FLAGS_quic_simple_packet_number_length_2) {
     MaybeUpdatePacketNumberLength();
   }
+
+  //计算待添加数据帧的序列化长度。如果当前数据包已满，则调用 Flush 方法将当前数据包发送出去，并返回 false。
+  //这里的last参数为true.
   size_t frame_len = framer_->GetSerializedFrameLength(
       frame, BytesFree(), queued_frames_.empty(), true,
       packet_.packet_number_length);
@@ -633,22 +669,27 @@ bool QuicPacketCreator::AddFrame(const QuicFrame& frame,
     return false;
   }
   DCHECK_LT(0u, packet_size_);
+  //更新当前数据包的大小。
   packet_size_ += ExpansionOnNewFrame() + frame_len;
 
+  //如果该数据帧需要进行重传，则将该数据帧添加到重传队列中，并将其添加到待发送队列中。
   if (save_retransmittable_frames && ShouldRetransmit(frame)) {
     if (packet_.retransmittable_frames.empty()) {
       packet_.retransmittable_frames.reserve(2);
     }
     packet_.retransmittable_frames.push_back(frame);
     queued_frames_.push_back(frame);
+    //如果该数据帧是加密握手数据，则将当前数据包标记为包含已经加密的数据。
     if (frame.type == STREAM_FRAME &&
         frame.stream_frame->stream_id == kCryptoStreamId) {
       packet_.has_crypto_handshake = IS_HANDSHAKE;
     }
+  //直接添加到缓存队列中
   } else {
     queued_frames_.push_back(frame);
   }
 
+  //更新状态
   if (frame.type == ACK_FRAME) {
     packet_.has_ack = true;
   }

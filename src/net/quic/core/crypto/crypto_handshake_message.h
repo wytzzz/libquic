@@ -21,6 +21,8 @@ namespace net {
 
 // An intermediate format of a handshake message that's convenient for a
 // CryptoFramer to serialize from or parse into.
+
+//加密的握手消息
 class NET_EXPORT_PRIVATE CryptoHandshakeMessage {
  public:
   CryptoHandshakeMessage();
@@ -123,6 +125,7 @@ class NET_EXPORT_PRIVATE CryptoHandshakeMessage {
   QuicErrorCode GetPOD(QuicTag tag, void* out, size_t len) const;
 
   std::string DebugStringInternal(size_t indent) const;
+
 
   QuicTag tag_;
   QuicTagValueMap tag_value_map_;

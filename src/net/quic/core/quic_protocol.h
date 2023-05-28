@@ -253,6 +253,7 @@ enum class ConnectionCloseBehavior {
 
 NET_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& os,
                                             const Perspective& s);
+//包类型定义
 enum QuicFrameType {
   // Regular frame types. The values set here cannot change without the
   // introduction of a new QUIC version.
@@ -339,6 +340,7 @@ enum QuicPacketPublicFlags {
 };
 
 // The private flags are specified in one byte.
+//
 enum QuicPacketPrivateFlags {
   PACKET_PRIVATE_FLAGS_NONE = 0,
 
@@ -1172,7 +1174,9 @@ struct NET_EXPORT_PRIVATE QuicPathCloseFrame {
 // understand.
 enum EncryptionLevel : int8_t {
   ENCRYPTION_NONE = 0,
+  //握手阶段的密文
   ENCRYPTION_INITIAL = 1,
+  //握手之后的密文
   ENCRYPTION_FORWARD_SECURE = 2,
 
   NUM_ENCRYPTION_LEVELS,
@@ -1239,6 +1243,8 @@ static_assert(sizeof(QuicFrame) <= 16,
 
 typedef std::vector<QuicFrame> QuicFrames;
 
+
+//buf类
 class NET_EXPORT_PRIVATE QuicData {
  public:
   QuicData(const char* buffer, size_t length);

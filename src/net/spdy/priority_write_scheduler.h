@@ -43,6 +43,7 @@ class PriorityWriteScheduler : public WriteScheduler<StreamIdType> {
   // Creates scheduler with no streams.
   PriorityWriteScheduler() = default;
 
+  //优先级调度类
   void RegisterStream(StreamIdType stream_id,
                       const StreamPrecedenceType& precedence) override {
     SPDY_BUG_IF(!precedence.is_spdy3_priority()) << "Expected SPDY priority";
