@@ -22,6 +22,7 @@
 //
 // We use a macro to ensure that no static initialisers are created. Use the
 // MakeQuicTag function in normal code.
+//生成 big endian 的 QuicTag 常量
 #define TAG(a, b, c, d) \
   static_cast<QuicTag>((d << 24) + (c << 16) + (b << 8) + a)
 

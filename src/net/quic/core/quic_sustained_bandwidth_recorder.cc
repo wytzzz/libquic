@@ -41,6 +41,8 @@ void QuicSustainedBandwidthRecorder::RecordEstimate(bool in_recovery,
 
   // If we have been recording for at least 3 * srtt, then record the latest
   // bandwidth estimate as a valid sustained bandwidth estimate.
+  //为了算出持续带宽,它要求持续记录3个RTT才计算一个值
+  //如果持续记录时间>= 3*srtt,则将当前带宽记为持续带宽值
   if (estimate_time - start_time_ >= 3 * srtt) {
     has_estimate_ = true;
     bandwidth_estimate_recorded_during_slow_start_ = in_slow_start;
@@ -50,6 +52,7 @@ void QuicSustainedBandwidthRecorder::RecordEstimate(bool in_recovery,
   }
 
   // Check for an increase in max bandwidth.
+  //通过比较新的带宽估计与当前最大带宽,更新最大带宽估计
   if (bandwidth > max_bandwidth_estimate_) {
     max_bandwidth_estimate_ = bandwidth;
     max_bandwidth_timestamp_ = wall_time.ToUNIXSeconds();

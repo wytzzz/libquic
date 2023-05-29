@@ -20,6 +20,7 @@ class AckNotifierManager;
 // 1) Track retransmittable data, including multiple transmissions of frames.
 // 2) Track packets and bytes in flight for congestion control.
 // 3) Track sent time of packets to provide RTT measurements from acks.
+
 class NET_EXPORT_PRIVATE QuicUnackedPacketMap {
  public:
   QuicUnackedPacketMap();

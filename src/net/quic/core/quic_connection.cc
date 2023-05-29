@@ -325,39 +325,52 @@ void QuicConnection::ClearQueuedPackets() {
   queued_packets_.clear();
 }
 
+
 void QuicConnection::SetFromConfig(const QuicConfig& config) {
 
 
+    //握手结束
   if (config.negotiated()) {
     // Handshake complete, set handshake timeout to Infinite.
+    //设置断连超时时间
     SetNetworkTimeouts(QuicTime::Delta::Infinite(),
                        config.IdleConnectionStateLifetime());
+    //静默关闭链接模式
     if (config.SilentClose()) {
       idle_timeout_connection_close_behavior_ =
           ConnectionCloseBehavior::SILENT_CLOSE;
     }
+    //支持多径
     if (FLAGS_quic_enable_multipath && config.MultipathEnabled()) {
       multipath_enabled_ = true;
     }
   } else {
+      //如果还在握手阶段,则使用 max_time_before_crypto_handshake 和 max_idle_time_before_crypto_handshake 分别设置网络超时时间。
     SetNetworkTimeouts(config.max_time_before_crypto_handshake(),
                        config.max_idle_time_before_crypto_handshake());
   }
 
+
+  //进一步设置到QuicSentPacketManagerInterface
   sent_packet_manager_->SetFromConfig(config);
+  //设置conn_id长度
   if (config.HasReceivedBytesForConnectionId() &&
       can_truncate_connection_ids_) {
     packet_generator_.SetConnectionIdLength(
         config.ReceivedBytesForConnectionId());
   }
+  //最大解码数据包长度
   max_undecryptable_packets_ = config.max_undecryptable_packets();
 
+  //根据connectionopt协商
+  //根据客户端发送的连接选项kMTUH/kMTUL ,设置 MTU 探测目标。
   if (config.HasClientSentConnectionOption(kMTUH, perspective_)) {
     SetMtuDiscoveryTarget(kMtuDiscoveryTargetPacketSizeHigh);
   }
   if (config.HasClientSentConnectionOption(kMTUL, perspective_)) {
     SetMtuDiscoveryTarget(kMtuDiscoveryTargetPacketSizeLow);
   }
+  //还根据连接选项 kACKD/kAKD2/kAKD3/kAKD4 设置确认模式。
   if (debug_visitor_ != nullptr) {
     debug_visitor_->OnSetFromConfig(config);
   }
@@ -375,6 +388,7 @@ void QuicConnection::SetFromConfig(const QuicConfig& config) {
     ack_mode_ = ACK_DECIMATION_WITH_REORDERING;
     ack_decimation_delay_ = kShortAckDecimationDelay;
   }
+  //根据连接选项 k5RTO 设置是否在五次连续RTO后关闭连接。
   if (config.HasClientSentConnectionOption(k5RTO, perspective_)) {
     close_connection_after_five_rtos_ = true;
   }

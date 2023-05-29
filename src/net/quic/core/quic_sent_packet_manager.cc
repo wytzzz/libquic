@@ -93,7 +93,10 @@ QuicSentPacketManager::QuicSentPacketManager(
 
 QuicSentPacketManager::~QuicSentPacketManager() {}
 
+//配置
 void QuicSentPacketManager::SetFromConfig(const QuicConfig& config) {
+
+  //设置初始的rtt
   if (config.HasReceivedInitialRoundTripTimeUs() &&
       config.ReceivedInitialRoundTripTimeUs() > 0) {
     rtt_stats_.set_initial_rtt_us(
@@ -108,10 +111,13 @@ void QuicSentPacketManager::SetFromConfig(const QuicConfig& config) {
                 config.GetInitialRoundTripTimeUsToSend())));
   }
   // TODO(ianswett): BBR is currently a server only feature.
+  //支持bbr
   if (FLAGS_quic_allow_bbr && config.HasReceivedConnectionOptions() &&
       ContainsQuicTag(config.ReceivedConnectionOptions(), kTBBR)) {
     SetSendAlgorithm(kBBR);
   }
+
+  //Reno
   if (config.HasReceivedConnectionOptions() &&
       ContainsQuicTag(config.ReceivedConnectionOptions(), kRENO)) {
     if (ContainsQuicTag(config.ReceivedConnectionOptions(), kBYTE)) {
@@ -123,6 +129,7 @@ void QuicSentPacketManager::SetFromConfig(const QuicConfig& config) {
              ContainsQuicTag(config.ReceivedConnectionOptions(), kBYTE)) {
     SetSendAlgorithm(kCubicBytes);
   }
+
   using_pacing_ = !FLAGS_quic_disable_pacing_for_perf_tests;
 
   if (config.HasClientSentConnectionOption(k1CON, perspective_)) {
@@ -151,6 +158,8 @@ void QuicSentPacketManager::SetFromConfig(const QuicConfig& config) {
   if (config.HasClientSentConnectionOption(kUNDO, perspective_)) {
     undo_pending_retransmits_ = true;
   }
+
+  //设置发送端拥塞控制算法
   send_algorithm_->SetFromConfig(config, perspective_);
 
   if (network_change_visitor_ != nullptr) {
@@ -158,9 +167,11 @@ void QuicSentPacketManager::SetFromConfig(const QuicConfig& config) {
   }
 }
 
+
 void QuicSentPacketManager::ResumeConnectionState(
     const CachedNetworkParameters& cached_network_params,
     bool max_bandwidth_resumption) {
+  //历史数据
   if (cached_network_params.has_min_rtt_ms()) {
     uint32_t initial_rtt_us =
         kNumMicrosPerMilli * cached_network_params.min_rtt_ms();
@@ -168,6 +179,7 @@ void QuicSentPacketManager::ResumeConnectionState(
         max(kMinInitialRoundTripTimeUs,
             min(kMaxInitialRoundTripTimeUs, initial_rtt_us)));
   }
+  //设置到拥塞控制算法
   send_algorithm_->ResumeConnectionState(cached_network_params,
                                          max_bandwidth_resumption);
 }
@@ -188,24 +200,33 @@ void QuicSentPacketManager::SetHandshakeConfirmed() {
   handshake_confirmed_ = true;
 }
 
+//处理ack frame
 void QuicSentPacketManager::OnIncomingAck(const QuicAckFrame& ack_frame,
                                           QuicTime ack_receive_time) {
   DCHECK_LE(ack_frame.largest_observed, unacked_packets_.largest_sent_packet());
+  //提前获取flight 和 rtt
   QuicByteCount bytes_in_flight = unacked_packets_.bytes_in_flight();
+  //更新已接收到的序列号
   UpdatePacketInformationReceivedByPeer(ack_frame);
+  //更新RTT
   bool rtt_updated = MaybeUpdateRTT(ack_frame, ack_receive_time);
   DCHECK_GE(ack_frame.largest_observed, unacked_packets_.largest_observed());
+  //处理已收ACK的报文
   unacked_packets_.IncreaseLargestObserved(ack_frame.largest_observed);
-
   HandleAckForSentPackets(ack_frame);
+  //触发丢包检测
   InvokeLossDetection(ack_receive_time);
   // Ignore losses in RTO mode.
   if (consecutive_rto_count_ > 0 && !use_new_rto_) {
     packets_lost_.clear();
   }
+  //触发拥塞控制
   MaybeInvokeCongestionEvent(rtt_updated, bytes_in_flight);
+
+  //删除过时数据包
   unacked_packets_.RemoveObsoletePackets();
 
+  //带宽估计值记录
   sustained_bandwidth_recorder_.RecordEstimate(
       send_algorithm_->InRecovery(), send_algorithm_->InSlowStart(),
       send_algorithm_->BandwidthEstimate(), ack_receive_time, clock_->WallNow(),
@@ -213,7 +234,9 @@ void QuicSentPacketManager::OnIncomingAck(const QuicAckFrame& ack_frame,
 
   // Anytime we are making forward progress and have a new RTT estimate, reset
   // the backoff counters.
+  //重置超时重传的指数退避记录
   if (rtt_updated) {
+    //如果触发了rto
     if (consecutive_rto_count_ > 0) {
       // If the ack acknowledges data sent prior to the RTO,
       // the RTO was spurious.
@@ -222,20 +245,25 @@ void QuicSentPacketManager::OnIncomingAck(const QuicAckFrame& ack_frame,
         // a spurious RTO from happening again.
         rtt_stats_.ExpireSmoothedMetrics();
       } else {
+        //记录一次rto期间恢复的重传.
         if (!use_new_rto_) {
           send_algorithm_->OnRetransmissionTimeout(true);
         }
       }
     }
+
     // Reset all retransmit counters any time a new packet is acked.
     consecutive_rto_count_ = 0;
     consecutive_tlp_count_ = 0;
     consecutive_crypto_retransmission_count_ = 0;
   }
+  //
   // TODO(ianswett): Consider replacing the pending_retransmissions_ with a
   // fast way to retrieve the next pending retransmission, if there are any.
   // A single packet number indicating all packets below that are lost should
   // be all the state that is necessary.
+  //此段代码主要是撤回(undo)任何超过 largest_newly_acked_ 的待重传包。
+
   while (undo_pending_retransmits_ && !pending_retransmissions_.empty() &&
          pending_retransmissions_.front().first > largest_newly_acked_ &&
          pending_retransmissions_.front().second == LOSS_RETRANSMISSION) {
@@ -253,8 +281,10 @@ void QuicSentPacketManager::OnIncomingAck(const QuicAckFrame& ack_frame,
 
 void QuicSentPacketManager::UpdatePacketInformationReceivedByPeer(
     const QuicAckFrame& ack_frame) {
+  //如果range为空
   if (ack_frame.packets.Empty()) {
     least_packet_awaited_by_peer_ = ack_frame.largest_observed + 1;
+    //如果非空
   } else {
     least_packet_awaited_by_peer_ = ack_frame.packets.Min();
   }
@@ -263,9 +293,12 @@ void QuicSentPacketManager::UpdatePacketInformationReceivedByPeer(
 void QuicSentPacketManager::MaybeInvokeCongestionEvent(
     bool rtt_updated,
     QuicByteCount bytes_in_flight) {
+
   if (!rtt_updated && packets_acked_.empty() && packets_lost_.empty()) {
     return;
   }
+  //通知拥塞控制算法flight 和 rtt.
+  //packets_acked_和packets_lost_
   if (using_pacing_) {
     pacing_sender_.OnCongestionEvent(rtt_updated, bytes_in_flight,
                                      packets_acked_, packets_lost_);
@@ -273,6 +306,7 @@ void QuicSentPacketManager::MaybeInvokeCongestionEvent(
     send_algorithm_->OnCongestionEvent(rtt_updated, bytes_in_flight,
                                        packets_acked_, packets_lost_);
   }
+
   packets_acked_.clear();
   packets_lost_.clear();
   if (network_change_visitor_ != nullptr) {
@@ -285,29 +319,42 @@ void QuicSentPacketManager::HandleAckForSentPackets(
   // Go through the packets we have not received an ack for and see if this
   // incoming_ack shows they've been seen by the peer.
   QuicTime::Delta ack_delay_time = ack_frame.ack_delay_time;
+  //遍历尚未收到ACK的报文
   QuicPacketNumber packet_number = unacked_packets_.GetLeastUnacked();
   for (QuicUnackedPacketMap::iterator it = unacked_packets_.begin();
        it != unacked_packets_.end(); ++it, ++packet_number) {
+    //如果报文序列号大于 ACK 中的 largest_observed ,则所有unack pack都还在网络中转,跳过
     if (packet_number > ack_frame.largest_observed) {
       // These packets are still in flight.
       break;
     }
 
+    //两种情况,不用处理,直接跳过.
+    //丢失报文包含本地未应答报文
+    //应答报文不包含本地未应答报文
     if ((ack_frame.missing && ack_frame.packets.Contains(packet_number)) ||
         (!ack_frame.missing && !ack_frame.packets.Contains(packet_number))) {
       // Packet is still missing.
       continue;
     }
+
+    //过滤出新应答的数据包.
     // Packet was acked, so remove it from our unacked packet list.
     DVLOG(1) << ENDPOINT << "Got an ack for packet " << packet_number;
     // If data is associated with the most recent transmission of this
     // packet, then inform the caller.
+
+    //首次应答
     if (it->in_flight) {
       packets_acked_.push_back(std::make_pair(packet_number, it->bytes_sent));
+    //当报文第一次被ACK时(收到确认),it->is_unackable会被设置为true
+    //非首次应答
     } else if (!it->is_unackable) {
+      //如果报文没被标记为不需要ACK(is_unackable为false),则更新下边界.
       // Packets are marked unackable after they've been acked once.
       largest_newly_acked_ = packet_number;
     }
+    //进一步处理
     MarkPacketHandled(packet_number, &(*it), ack_delay_time);
   }
 }
@@ -351,6 +398,7 @@ void QuicSentPacketManager::NeuterUnencryptedPackets() {
 void QuicSentPacketManager::MarkForRetransmission(
     QuicPacketNumber packet_number,
     TransmissionType transmission_type) {
+  //标记为重传
   const TransmissionInfo& transmission_info =
       unacked_packets_.GetTransmissionInfo(packet_number);
   QUIC_BUG_IF(transmission_info.retransmittable_frames.empty());
@@ -358,6 +406,7 @@ void QuicSentPacketManager::MarkForRetransmission(
   // detection decide if packets are lost.
   if (transmission_type != TLP_RETRANSMISSION &&
       transmission_type != RTO_RETRANSMISSION) {
+    //标记正常丢包的数据从网路中移除.
     unacked_packets_.RemoveFromInFlight(packet_number);
   }
   if (delegate_ != nullptr) {
@@ -370,12 +419,15 @@ void QuicSentPacketManager::MarkForRetransmission(
       return;
     }
 
+
+    //加入到pending重传中.
     pending_retransmissions_[packet_number] = transmission_type;
   }
 }
 
 void QuicSentPacketManager::RecordOneSpuriousRetransmission(
     const TransmissionInfo& info) {
+  //统计
   stats_->bytes_spuriously_retransmitted += info.bytes_sent;
   ++stats_->packets_spuriously_retransmitted;
   if (debug_delegate_ != nullptr) {
@@ -387,14 +439,20 @@ void QuicSentPacketManager::RecordOneSpuriousRetransmission(
 void QuicSentPacketManager::RecordSpuriousRetransmissions(
     const TransmissionInfo& info,
     QuicPacketNumber acked_packet_number) {
+  //获取正在ACK的报文(info)对应的所有重传序列号
   QuicPacketNumber retransmission = info.retransmission;
+  //至少重传过一次
   while (retransmission != 0) {
+    //获取该重传的TransmissionInfo
     const TransmissionInfo& retransmit_info =
         unacked_packets_.GetTransmissionInfo(retransmission);
+    //更新retransmission为下一条重传链
     retransmission = retransmit_info.retransmission;
+    //记录一次重传
     RecordOneSpuriousRetransmission(retransmit_info);
   }
   // Only inform the loss detection of spurious retransmits it caused.
+  //如果该重传是由丢包引起的,则告知重传算法有虚假重传发生
   if (unacked_packets_.GetTransmissionInfo(info.retransmission)
           .transmission_type == LOSS_RETRANSMISSION) {
     loss_algorithm_->SpuriousRetransmitDetected(
@@ -440,6 +498,7 @@ QuicPacketNumber QuicSentPacketManager::GetNewestRetransmission(
     QuicPacketNumber packet_number,
     const TransmissionInfo& transmission_info) const {
   QuicPacketNumber retransmission = transmission_info.retransmission;
+  //重传过
   while (retransmission != 0) {
     packet_number = retransmission;
     retransmission =
@@ -474,6 +533,7 @@ void QuicSentPacketManager::MarkPacketNotRetransmittable(
 void QuicSentPacketManager::MarkPacketHandled(QuicPacketNumber packet_number,
                                               TransmissionInfo* info,
                                               QuicTime::Delta ack_delay_time) {
+  //获取重传链尾部
   QuicPacketNumber newest_transmission =
       GetNewestRetransmission(packet_number, *info);
   // Remove the most recent packet, if it is pending retransmission.
@@ -486,12 +546,18 @@ void QuicSentPacketManager::MarkPacketHandled(QuicPacketNumber packet_number,
 
   // The AckListener needs to be notified about the most recent
   // transmission, since that's the one only one it tracks.
+  //如果当前ack packet没有经历重传,直接通知监听器
   if (newest_transmission == packet_number) {
     unacked_packets_.NotifyAndClearListeners(&info->ack_listeners,
+
                                              ack_delay_time);
+
+  //当前ack packet是重传后恢复的.
   } else {
+    //通知最新的传输序号对应的ACK监听器
     unacked_packets_.NotifyAndClearListeners(newest_transmission,
                                              ack_delay_time);
+    //处理这次虚假重传
     RecordSpuriousRetransmissions(*info, packet_number);
     // Remove the most recent packet from flight if it's a crypto handshake
     // packet, since they won't be acked now that one has been processed.
@@ -499,8 +565,10 @@ void QuicSentPacketManager::MarkPacketHandled(QuicPacketNumber packet_number,
     // transmission of a crypto packet is in flight at once.
     // TODO(ianswett): Instead of handling all crypto packets special,
     // only handle nullptr encrypted packets in a special way.
+    //更新
     const TransmissionInfo& newest_transmission_info =
         unacked_packets_.GetTransmissionInfo(newest_transmission);
+    //如果是加密报文,则从in flight列表中移除,因为加密报文只有最新传输时才在in flight列表中。
     if (HasCryptoHandshake(newest_transmission_info)) {
       unacked_packets_.RemoveFromInFlight(newest_transmission);
     }
@@ -511,6 +579,8 @@ void QuicSentPacketManager::MarkPacketHandled(QuicPacketNumber packet_number,
     largest_mtu_acked_ = info->bytes_sent;
     network_change_visitor_->OnPathMtuIncreased(largest_mtu_acked_);
   }
+
+  //记录已应答
   unacked_packets_.RemoveFromInFlight(info);
   unacked_packets_.RemoveRetransmittability(info);
   info->is_unackable = true;
@@ -546,6 +616,7 @@ bool QuicSentPacketManager::OnPacketSent(
   }
 
   bool in_flight;
+  //往网络或者pacing发送数据
   if (using_pacing_) {
     in_flight = pacing_sender_.OnPacketSent(
         sent_time, unacked_packets_.bytes_in_flight(), packet_number,
@@ -556,6 +627,7 @@ bool QuicSentPacketManager::OnPacketSent(
         serialized_packet->encrypted_length, has_retransmittable_data);
   }
 
+  //加入到unack队列
   unacked_packets_.AddSentPacket(serialized_packet, original_packet_number,
                                  transmission_type, sent_time, in_flight);
   // Reset the retransmission timer anytime a pending packet is sent.
@@ -571,10 +643,12 @@ void QuicSentPacketManager::OnRetransmissionTimeout() {
   // algorithm says to, and the TLP and  RTO alarms are set after that.
   // The TLP alarm is always set to run for under an RTO.
   switch (GetRetransmissionMode()) {
+    //重传握手包,计数 stats_->crypto_retransmit_count + 1
     case HANDSHAKE_MODE:
       ++stats_->crypto_retransmit_count;
       RetransmitCryptoPackets();
       return;
+    //执行丢包检测,并调用 loss 函数。计数 stats_->loss_timeout_count + 1
     case LOSS_MODE: {
       ++stats_->loss_timeout_count;
       QuicByteCount bytes_in_flight = unacked_packets_.bytes_in_flight();
@@ -582,6 +656,7 @@ void QuicSentPacketManager::OnRetransmissionTimeout() {
       MaybeInvokeCongestionEvent(false, bytes_in_flight);
       return;
     }
+    //执行 tail loss probe(TLP),计数 stats_->tlp_count + 1并设置 pending_timer_transmission_count_ = 1
     case TLP_MODE:
       // If no tail loss probe can be sent, because there are no retransmittable
       // packets, execute a conventional RTO to abandon old packets.
@@ -591,6 +666,7 @@ void QuicSentPacketManager::OnRetransmissionTimeout() {
       // TLPs prefer sending new data instead of retransmitting data, so
       // give the connection a chance to write before completing the TLP.
       return;
+    //RTO_MODE: 执行 RTO 重传,计数 stats_->rto_count + 1
     case RTO_MODE:
       ++stats_->rto_count;
       RetransmitRtoPackets();
@@ -648,6 +724,7 @@ void QuicSentPacketManager::RetransmitRtoPackets() {
       << "Retransmissions already queued:" << pending_timer_transmission_count_;
   // Mark two packets for retransmission.
   QuicPacketNumber packet_number = unacked_packets_.GetLeastUnacked();
+  //限制 RTO 重传的包数目,最多 kMaxRetransmissionsOnTimeout 个包
   for (QuicUnackedPacketMap::const_iterator it = unacked_packets_.begin();
        it != unacked_packets_.end(); ++it, ++packet_number) {
     if (!it->retransmittable_frames.empty() &&
@@ -658,6 +735,7 @@ void QuicSentPacketManager::RetransmitRtoPackets() {
     // Abandon non-retransmittable data that's in flight to ensure it doesn't
     // fill up the congestion window.
     const bool has_retransmissions = it->retransmission != 0;
+    //清空不必要的包,默认为这些包在rto场景下已经丢失,从flight中清除,避免占用拥塞窗口.
     if (it->retransmittable_frames.empty() && it->in_flight &&
         !has_retransmissions) {
       // Log only for non-retransmittable data.
@@ -670,6 +748,8 @@ void QuicSentPacketManager::RetransmitRtoPackets() {
       }
     }
   }
+
+
   if (pending_timer_transmission_count_ > 0) {
     if (consecutive_rto_count_ == 0) {
       first_rto_transmission_ = unacked_packets_.largest_sent_packet() + 1;
@@ -700,8 +780,13 @@ void QuicSentPacketManager::InvokeLossDetection(QuicTime time) {
     DCHECK_LE(packets_acked_.front().first, packets_acked_.back().first);
     largest_newly_acked_ = packets_acked_.back().first;
   }
+
+  //丢包算法检测丢包,packets_lost_返回检测为丢包的数据包.
+  //1,2,4
   loss_algorithm_->DetectLosses(unacked_packets_, time, rtt_stats_,
                                 largest_newly_acked_, &packets_lost_);
+
+  //遍历确定为丢包的数据
   for (const auto& pair : packets_lost_) {
     ++stats_->packets_lost;
     if (debug_delegate_ != nullptr) {
@@ -709,6 +794,7 @@ void QuicSentPacketManager::InvokeLossDetection(QuicTime time) {
     }
 
     // TODO(ianswett): This could be optimized.
+
     if (unacked_packets_.HasRetransmittableFrames(pair.first)) {
       MarkForRetransmission(pair.first, LOSS_RETRANSMISSION);
     } else {
@@ -753,6 +839,7 @@ bool QuicSentPacketManager::MaybeUpdateRTT(const QuicAckFrame& ack_frame,
                  << transmission_info.sent_time.ToDebuggingValue();
     return false;
   }
+
   rtt_stats_.UpdateRtt(send_delta, ack_frame.ack_delay_time, ack_receive_time);
 
   return true;
@@ -763,6 +850,7 @@ QuicTime::Delta QuicSentPacketManager::TimeUntilSend(QuicTime now,
   QuicTime::Delta delay = QuicTime::Delta::Infinite();
   // The TLP logic is entirely contained within QuicSentPacketManager, so the
   // send algorithm does not need to be consulted.
+  //如果有待发送的重传(pending_timer_transmission_count_ > 0),则可以立即发送(TimeUntilSend 为 0)
   if (pending_timer_transmission_count_ > 0) {
     delay = QuicTime::Delta::Zero();
   } else if (using_pacing_) {
@@ -906,6 +994,7 @@ std::string QuicSentPacketManager::GetDebugState() const {
 
 void QuicSentPacketManager::CancelRetransmissionsForStream(
     QuicStreamId stream_id) {
+
   unacked_packets_.CancelRetransmissionsForStream(stream_id);
   if (delegate_ != nullptr) {
     return;

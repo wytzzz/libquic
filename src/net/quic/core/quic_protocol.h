@@ -1494,6 +1494,10 @@ struct NET_EXPORT_PRIVATE TransmissionInfo {
   // True if the packet can never be acked, so it can be removed.  Occurs when
   // a packet is never sent, after it is acknowledged once, or if it's a crypto
   // packet we never expect to receive an ack for.
+  //包含三种情况
+  //报文从未发送,则无需ACK
+  //报文已经ACK过,则后续无需再ACK
+  //报文为不需要ACK的类型(如加密报文)
   bool is_unackable;
   // True if the packet contains stream data from the crypto stream.
   bool has_crypto_handshake;

@@ -1001,6 +1001,7 @@ class NET_EXPORT_PRIVATE QuicConnection
   // FLAGS_quic_only_one_sending_alarm
   QuicArenaScopedPtr<QuicAlarm> resume_writes_alarm_;
   // An alarm that fires when the connection may have timed out.
+  //断开链接超时判断
   QuicArenaScopedPtr<QuicAlarm> timeout_alarm_;
   // An alarm that fires when a ping should be sent.
   QuicArenaScopedPtr<QuicAlarm> ping_alarm_;
