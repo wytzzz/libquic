@@ -260,6 +260,7 @@ void ReliableQuicStream::MaybeSendBlocked() {
   // WINDOW_UPDATE arrives.
   if (connection_flow_controller_->IsBlocked() &&
       !flow_controller_.IsBlocked()) {
+      //暂时缓存起来,等连接级别流控恢复.
     session_->MarkConnectionLevelWriteBlocked(id());
   }
 }
@@ -394,6 +395,7 @@ const IPEndPoint& ReliableQuicStream::PeerAddressOfLatestPacket() const {
 }
 
 void ReliableQuicStream::OnClose() {
+
   CloseReadSide();
   CloseWriteSide();
 
@@ -468,6 +470,7 @@ void ReliableQuicStream::AddBytesConsumed(QuicByteCount bytes) {
 
 void ReliableQuicStream::UpdateSendWindowOffset(QuicStreamOffset new_window) {
   if (flow_controller_.UpdateSendWindowOffset(new_window)) {
+      //通过可以从发送阻塞中恢复,可以发送更多的数据
     OnCanWrite();
   }
 }

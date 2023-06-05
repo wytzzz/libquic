@@ -51,7 +51,9 @@ TcpCubicSenderBase::~TcpCubicSenderBase() {}
 
 void TcpCubicSenderBase::SetFromConfig(const QuicConfig& config,
                                        Perspective perspective) {
+
   if (perspective == Perspective::IS_SERVER) {
+      //
     if (config.HasReceivedConnectionOptions() &&
         ContainsQuicTag(config.ReceivedConnectionOptions(), kIW03)) {
       // Initial window experiment.
@@ -131,16 +133,22 @@ void TcpCubicSenderBase::OnCongestionEvent(
     QuicByteCount bytes_in_flight,
     const CongestionVector& acked_packets,
     const CongestionVector& lost_packets) {
+  //
   if (rtt_updated && InSlowStart() &&
       hybrid_slow_start_.ShouldExitSlowStart(
           rtt_stats_->latest_rtt(), rtt_stats_->min_rtt(),
           GetCongestionWindow() / kDefaultTCPMSS)) {
+    //
     ExitSlowstart();
   }
+
+  //丢包
   for (CongestionVector::const_iterator it = lost_packets.begin();
        it != lost_packets.end(); ++it) {
+
     OnPacketLost(it->first, it->second, bytes_in_flight);
   }
+  //ack
   for (CongestionVector::const_iterator it = acked_packets.begin();
        it != acked_packets.end(); ++it) {
     OnPacketAcked(it->first, it->second, bytes_in_flight);
@@ -192,11 +200,13 @@ bool TcpCubicSenderBase::OnPacketSent(
 QuicTime::Delta TcpCubicSenderBase::TimeUntilSend(
     QuicTime /* now */,
     QuicByteCount bytes_in_flight) const {
+    //灰度阶段
   if (!no_prr_ && InRecovery()) {
     // PRR is used when in recovery.
     return prr_.TimeUntilSend(GetCongestionWindow(), bytes_in_flight,
                               GetSlowStartThreshold());
   }
+
   if (GetCongestionWindow() > bytes_in_flight) {
     return QuicTime::Delta::Zero();
   }

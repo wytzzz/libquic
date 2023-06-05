@@ -1025,6 +1025,7 @@ struct NET_EXPORT_PRIVATE QuicAckFrame {
   PacketTimeVector received_packet_times;
 
   // Set of packets.
+  //接收到的packet区间.
   PacketNumberQueue packets;
 
   // Path which this ack belongs to.

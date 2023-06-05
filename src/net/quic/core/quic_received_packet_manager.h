@@ -176,6 +176,12 @@ class NET_EXPORT_PRIVATE QuicReceivedPacketManager
 
   // True if |ack_frame_| has been updated since UpdateReceivedPacketInfo was
   // last called.
+  //如果ACK帧被更新(比如新增丢失报文,更新最大接收报文号等),那么标志会被设置为true:
+  //之后,每次调用GetUpdatedAckFrame()这个函数获取ACK帧时,会首先检查这个标志
+  //QuicReceivedPacketManager管理收到的报文,建立ACK帧
+  //UpdateReceivedPacketInfo()每收到一个报文就被调用,可能会更新ACK帧
+  //GetUpdatedAckFrame()返回的是最新的ACK帧
+  //通过检查这个标志,GetUpdatedAckFrame()才能正确获取并返回最新的ACK帧。
   bool ack_frame_updated_;
 
   // The time we received the largest_observed packet number, or zero if

@@ -300,6 +300,7 @@ void QuicSentPacketManager::MaybeInvokeCongestionEvent(
   //通知拥塞控制算法flight 和 rtt.
   //packets_acked_和packets_lost_
   if (using_pacing_) {
+
     pacing_sender_.OnCongestionEvent(rtt_updated, bytes_in_flight,
                                      packets_acked_, packets_lost_);
   } else {
@@ -796,6 +797,7 @@ void QuicSentPacketManager::InvokeLossDetection(QuicTime time) {
     // TODO(ianswett): This could be optimized.
 
     if (unacked_packets_.HasRetransmittableFrames(pair.first)) {
+        //标记需要重传
       MarkForRetransmission(pair.first, LOSS_RETRANSMISSION);
     } else {
       // Since we will not retransmit this, we need to remove it from
@@ -840,6 +842,7 @@ bool QuicSentPacketManager::MaybeUpdateRTT(const QuicAckFrame& ack_frame,
     return false;
   }
 
+  //
   rtt_stats_.UpdateRtt(send_delta, ack_frame.ack_delay_time, ack_receive_time);
 
   return true;

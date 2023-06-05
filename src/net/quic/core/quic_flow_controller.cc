@@ -45,10 +45,12 @@ QuicFlowController::QuicFlowController(QuicConnection* connection,
            << ", setting send window offset to: " << send_window_offset_;
 }
 
+//在有新的数据被消费的时候被调用
 void QuicFlowController::AddBytesConsumed(QuicByteCount bytes_consumed) {
   bytes_consumed_ += bytes_consumed;
   DVLOG(1) << ENDPOINT << "Stream " << id_ << " consumed: " << bytes_consumed_;
 
+  //接收窗口更新以及发送窗口.
   MaybeSendWindowUpdate();
 }
 
@@ -140,6 +142,7 @@ void QuicFlowController::MaybeIncreaseMaxWindowSize() {
     return;
   }
 
+  //接收窗口增加2倍,并被receive_window_size_limit_限制.
   QuicByteCount old_window = receive_window_size_;
   receive_window_size_ *= 2;
   receive_window_size_ =
@@ -171,6 +174,7 @@ void QuicFlowController::MaybeSendWindowUpdate() {
   QuicStreamOffset available_window = receive_window_offset_ - bytes_consumed_;
   QuicByteCount threshold = WindowUpdateThreshold();
 
+  //接受窗口还有很久才满,不用着急更新接收窗口
   if (available_window >= threshold) {
     DVLOG(1) << ENDPOINT << "Not sending WindowUpdate for stream " << id_
              << ", available window: " << available_window
@@ -178,9 +182,18 @@ void QuicFlowController::MaybeSendWindowUpdate() {
     return;
   }
 
+  //前提条件 available_window < (receive_window_size_ / 2)
+  //如果更新很快,则说明这个时候的receive_window_size_很小.
+  //接口窗口相当于一个瓶子
+  //如果瓶子装满的速度足够快,一个rtt就接近满了,则说明瓶子小了,需要扩大瓶子
+  //如果瓶子装满的速度不够快,两个rtt都没有慢,则说明瓶子的size是合适的.
   MaybeIncreaseMaxWindowSize();
 
   // Update our receive window.
+  //receive_window_offset_ + receive_window_size_add - available_window
+  //receive_window_offset_ + receive_window_size_add  - receive_window_offset_ + bytes_consumed_
+  //bytes_consumed_ + receive_window_size_add
+  //将receive_window_offset_上限更新到receive_window_size_.
   receive_window_offset_ += (receive_window_size_ - available_window);
 
   DVLOG(1) << ENDPOINT << "Sending WindowUpdate frame for stream " << id_
@@ -191,6 +204,7 @@ void QuicFlowController::MaybeSendWindowUpdate() {
            << ". New receive window offset is: " << receive_window_offset_;
 
   // Inform the peer of our new receive window.
+  //通知对端
   connection_->SendWindowUpdate(id_, receive_window_offset_);
 }
 

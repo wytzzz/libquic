@@ -55,7 +55,7 @@ class NET_EXPORT_PRIVATE GeneralLossAlgorithm : public LossDetectionInterface {
   int reordering_shift() const { return reordering_shift_; }
 
  private:
-  QuicTime loss_detection_timeout_;
+  QuicTime loss_detection_timeout_; //上一次检测是否超时的事件.
   // Largest sent packet when a spurious retransmit is detected.
   // Prevents increasing the reordering threshold multiple times per epoch.
   QuicPacketNumber largest_sent_on_spurious_retransmit_;

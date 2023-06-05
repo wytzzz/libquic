@@ -40,6 +40,7 @@ RttStats::RttStats()
           QuicTime::Delta::Zero(),
           QuicTime::Zero()) {}
 
+          //强制更新min_rtt.
 void RttStats::SampleNewWindowedMinRtt(uint32_t num_samples) {
   num_samples_for_forced_min_ = num_samples;
   forced_windowed_min_rtt_ = QuicTime::Delta::Zero();
@@ -71,6 +72,7 @@ void RttStats::UpdateRtt(QuicTime::Delta send_delta,
   if (min_rtt_.IsZero() || min_rtt_ > send_delta) {
     min_rtt_ = send_delta;
   }
+
   UpdateWindowedMinRtt(send_delta, now);
 
   // Correct for ack_delay if information received from the peer results in a
@@ -101,6 +103,7 @@ void RttStats::UpdateRtt(QuicTime::Delta send_delta,
 void RttStats::UpdateWindowedMinRtt(QuicTime::Delta rtt_sample, QuicTime now) {
   // Update windowed_min_rtt.
   windowed_min_rtt_.Update(rtt_sample, now);
+  //强制更新min_rtt逻辑
   if (num_samples_for_forced_min_ <= 0) {
     return;
   }

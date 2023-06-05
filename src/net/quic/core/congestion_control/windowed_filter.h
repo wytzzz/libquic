@@ -78,9 +78,12 @@ class WindowedFilter {
 
   // Updates best estimates with |sample|, and expires and updates best
   // estimates as necessary.
-  void Update(T new_sample, TimeT new_time) {
+    //通过这种方式,窗口过滤器能够持续跟踪最优值、次优值和第三优值,并根据窗口长度适时地更新和替换这些值。
+
+    void Update(T new_sample, TimeT new_time) {
     // Reset all estimates if they have not yet been initialized, if new sample
     // is a new best, or if the newest recorded estimate is too old.
+    //当收到新样本时,如果是新的最优值,或当前最优值太旧,则重置所有估计值。
     if (estimates_[0].sample == zero_value_ ||
         Compare()(new_sample, estimates_[0].sample) ||
         new_time - estimates_[2].time > window_length_) {
@@ -96,6 +99,7 @@ class WindowedFilter {
     }
 
     // Expire and update estimates as necessary.
+      //如果第一优先值没有在整个窗口内更新
     if (new_time - estimates_[0].time > window_length_) {
       // The best estimate hasn't been updated for an entire window, so promote
       // second and third best estimates.
@@ -112,6 +116,8 @@ class WindowedFilter {
       }
       return;
     }
+
+    //如果第二优先值在窗口1/4内没有跟新
     if (estimates_[1].sample == estimates_[0].sample &&
         new_time - estimates_[1].time > window_length_ >> 2) {
       // A quarter of the window has passed without a better sample, so the
@@ -119,7 +125,7 @@ class WindowedFilter {
       estimates_[2] = estimates_[1] = Sample(new_sample, new_time);
       return;
     }
-
+    //如果第三优先值在窗口1/2内没有更新
     if (estimates_[2].sample == estimates_[1].sample &&
         new_time - estimates_[2].time > window_length_ >> 1) {
       // We've passed a half of the window without a better estimate, so take

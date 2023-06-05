@@ -29,7 +29,8 @@ class NET_EXPORT_PRIVATE SendAlgorithmInterface {
  public:
   // A sorted vector of packets.
   typedef std::vector<std::pair<QuicPacketNumber, QuicPacketLength>>
-      CongestionVector;
+    CongestionVector;
+
 
   static SendAlgorithmInterface* Create(
       const QuicClock* clock,
@@ -39,6 +40,7 @@ class NET_EXPORT_PRIVATE SendAlgorithmInterface {
       QuicPacketCount initial_congestion_window);
 
   virtual ~SendAlgorithmInterface() {}
+
 
   virtual void SetFromConfig(const QuicConfig& config,
                              Perspective perspective) = 0;

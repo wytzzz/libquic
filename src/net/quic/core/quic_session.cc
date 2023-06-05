@@ -151,6 +151,7 @@ void QuicSession::OnWindowUpdateFrame(const QuicWindowUpdateFrame& frame) {
     DVLOG(1) << ENDPOINT << "Received connection level flow control window "
                             "update with byte offset: "
              << frame.byte_offset;
+    //跟新发送上边界
     flow_controller_.UpdateSendWindowOffset(frame.byte_offset);
     return;
   }

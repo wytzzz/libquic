@@ -40,11 +40,15 @@ QuicStreamSequencer::QuicStreamSequencer(ReliableQuicStream* quic_stream,
 
 QuicStreamSequencer::~QuicStreamSequencer() {}
 
+
+
 void QuicStreamSequencer::OnStreamFrame(const QuicStreamFrame& frame) {
   ++num_frames_received_;
   const QuicStreamOffset byte_offset = frame.offset;
   const size_t data_len = frame.data_length;
 
+
+  //
   if (frame.fin) {
     CloseStreamAtOffset(frame.offset + data_len);
     if (data_len == 0) {
