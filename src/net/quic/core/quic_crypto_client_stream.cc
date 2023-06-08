@@ -117,6 +117,8 @@ void QuicCryptoClientStream::OnHandshakeMessage(
     const CryptoHandshakeMessage& message) {
   QuicCryptoClientStreamBase::OnHandshakeMessage(message);
 
+
+  //服务器更新config
   if (message.tag() == kSCUP) {
     if (!handshake_confirmed()) {
       CloseConnectionWithDetails(QUIC_CRYPTO_UPDATE_BEFORE_HANDSHAKE_COMPLETE,
@@ -199,9 +201,11 @@ void QuicCryptoClientStream::DoHandshakeLoop(const CryptoHandshakeMessage* in) {
     next_state_ = STATE_IDLE;
     rv = QUIC_SUCCESS;
     switch (state) {
+        //1.初始化
       case STATE_INITIALIZE:
         DoInitialize(cached);
         break;
+        //发送chlo
       case STATE_SEND_CHLO:
         DoSendCHLO(cached);
         return;  // return waiting to hear from server.
@@ -294,7 +298,9 @@ void QuicCryptoClientStream::DoSendCHLO(
   out.SetValue(kCTIM,
                session()->connection()->clock()->WallNow().ToUNIXSeconds());
 
+    //通过填充并发送一个非完整的CHLO,来继续QUIC的握手流程。
   if (!cached->IsComplete(session()->connection()->clock()->WallNow())) {
+
     crypto_config_->FillInchoateClientHello(
         server_id_, session()->connection()->supported_versions().front(),
         cached, session()->connection()->random_generator(),
@@ -334,6 +340,8 @@ void QuicCryptoClientStream::DoSendCHLO(
     DCHECK(!crypto_negotiated_params_.server_nonce.empty());
   }
 
+
+  //调用FillClientHello()来填充一个完整的ClientHello消息。
   string error_details;
   QuicErrorCode error = crypto_config_->FillClientHello(
       server_id_, session()->connection()->connection_id(),
@@ -349,21 +357,25 @@ void QuicCryptoClientStream::DoSendCHLO(
     CloseConnectionWithDetails(error, error_details);
     return;
   }
+
   CryptoUtils::HashHandshakeMessage(out, &chlo_hash_);
   channel_id_sent_ = (channel_id_key_.get() != nullptr);
   if (cached->proof_verify_details()) {
     proof_handler_->OnProofVerifyDetailsAvailable(
         *cached->proof_verify_details());
   }
+  //等待接收shlo,发送消息到对端
   next_state_ = STATE_RECV_SHLO;
   SendHandshakeMessage(out);
   // Be prepared to decrypt with the new server write key.
+  //准备使用新密钥进行解密。
   session()->connection()->SetAlternativeDecrypter(
       ENCRYPTION_INITIAL,
       crypto_negotiated_params_.initial_crypters.decrypter.release(),
       true /* latch once used */);
   // Send subsequent packets under encryption on the assumption that the
   // server will accept the handshake.
+  //使用新密钥进行加密。
   session()->connection()->SetEncrypter(
       ENCRYPTION_INITIAL,
       crypto_negotiated_params_.initial_crypters.encrypter.release());
@@ -371,7 +383,9 @@ void QuicCryptoClientStream::DoSendCHLO(
 
   // TODO(ianswett): Merge ENCRYPTION_REESTABLISHED and
   // ENCRYPTION_FIRST_ESTABLSIHED
+  //标记加密已建立。
   encryption_established_ = true;
+  //通知QuicSession加密已重建。
   session()->OnCryptoHandshakeEvent(QuicSession::ENCRYPTION_REESTABLISHED);
 }
 
@@ -389,9 +403,11 @@ void QuicCryptoClientStream::DoReceiveREJ(
     return;
   }
 
+  //
   const uint32_t* reject_reasons;
   size_t num_reject_reasons;
   static_assert(sizeof(QuicTag) == sizeof(uint32_t), "header out of sync");
+  //如果有RREJ标签,则提取reject原因列表。统计收到REJ的原因。
   if (in->GetTaglist(kRREJ, &reject_reasons, &num_reject_reasons) ==
       QUIC_NO_ERROR) {
     uint32_t packed_error = 0;
@@ -417,8 +433,10 @@ void QuicCryptoClientStream::DoReceiveREJ(
   // so we can cancel and retransmissions.
   session()->connection()->NeuterUnencryptedPackets();
 
+
   stateless_reject_received_ = in->tag() == kSREJ;
   string error_details;
+  //调用ProcessRejection()处理REJ消息。如果有错误,则关闭连接。
   QuicErrorCode error = crypto_config_->ProcessRejection(
       *in, session()->connection()->clock()->WallNow(),
       session()->connection()->version(), chlo_hash_, cached,
@@ -429,6 +447,7 @@ void QuicCryptoClientStream::DoReceiveREJ(
     CloseConnectionWithDetails(error, error_details);
     return;
   }
+    //判断缓存状态是否有效。如果无效,需要验证证明。
   if (!cached->proof_valid()) {
     if (!cached->signature().empty()) {
       // Note that we only verify the proof if the cached proof is not
@@ -440,6 +459,8 @@ void QuicCryptoClientStream::DoReceiveREJ(
       return;
     }
   }
+  //获取到channle_id
+  //每次重新发送CHLO,就需要再次附上新的Channel ID。
   next_state_ = STATE_GET_CHANNEL_ID;
 }
 
@@ -449,6 +470,7 @@ QuicAsyncStatus QuicCryptoClientStream::DoVerifyProof(
   DCHECK(verifier);
   next_state_ = STATE_VERIFY_PROOF_COMPLETE;
   generation_counter_ = cached->generation_counter();
+
 
   ProofVerifierCallbackImpl* proof_verify_callback =
       new ProofVerifierCallbackImpl(this);
@@ -504,8 +526,11 @@ void QuicCryptoClientStream::DoVerifyProofComplete(
   if (generation_counter_ != cached->generation_counter()) {
     next_state_ = STATE_VERIFY_PROOF;
   } else {
+
+      //保存证书
     SetCachedProofValid(cached);
     cached->SetProofVerifyDetails(verify_details_.release());
+    //是否需要交换channel id
     if (!handshake_confirmed()) {
       next_state_ = STATE_GET_CHANNEL_ID;
     } else {
@@ -515,10 +540,12 @@ void QuicCryptoClientStream::DoVerifyProofComplete(
   }
 }
 
+//获取缓存的channel_id
 QuicAsyncStatus QuicCryptoClientStream::DoGetChannelID(
     QuicCryptoClientConfig::CachedState* cached) {
   next_state_ = STATE_GET_CHANNEL_ID_COMPLETE;
   channel_id_key_.reset();
+  //获取channle_id
   if (!RequiresChannelID(cached)) {
     next_state_ = STATE_SEND_CHLO;
     return QUIC_SUCCESS;
@@ -530,6 +557,7 @@ QuicAsyncStatus QuicCryptoClientStream::DoGetChannelID(
       server_id_.host(), &channel_id_key_, channel_id_source_callback);
 
   switch (status) {
+      //异步获取channle_id
     case QUIC_PENDING:
       channel_id_source_callback_ = channel_id_source_callback;
       DVLOG(1) << "Looking up channel ID";
@@ -557,6 +585,7 @@ void QuicCryptoClientStream::DoGetChannelIDComplete() {
   next_state_ = STATE_SEND_CHLO;
 }
 
+//
 void QuicCryptoClientStream::DoReceiveSHLO(
     const CryptoHandshakeMessage* in,
     QuicCryptoClientConfig::CachedState* cached) {
@@ -596,6 +625,8 @@ void QuicCryptoClientStream::DoReceiveSHLO(
   }
 
   string error_details;
+
+  //
   QuicErrorCode error = crypto_config_->ProcessServerHello(
       *in, session()->connection()->connection_id(),
       session()->connection()->version(),
@@ -613,6 +644,7 @@ void QuicCryptoClientStream::DoReceiveSHLO(
     CloseConnectionWithDetails(error, "Server hello invalid: " + error_details);
     return;
   }
+  //通知参数协商完成
   session()->OnConfigNegotiated();
 
   CrypterPair* crypters = &crypto_negotiated_params_.forward_secure_crypters;
@@ -620,6 +652,8 @@ void QuicCryptoClientStream::DoReceiveSHLO(
   // has been floated that the server shouldn't send packets encrypted
   // with the FORWARD_SECURE key until it receives a FORWARD_SECURE
   // packet from the client.
+
+  //设置解码器和编码器
   session()->connection()->SetAlternativeDecrypter(
       ENCRYPTION_FORWARD_SECURE, crypters->decrypter.release(),
       false /* don't latch */);
@@ -629,6 +663,7 @@ void QuicCryptoClientStream::DoReceiveSHLO(
 
   handshake_confirmed_ = true;
   session()->OnCryptoHandshakeEvent(QuicSession::HANDSHAKE_CONFIRMED);
+  //通知握手完成
   session()->connection()->OnHandshakeComplete();
 }
 

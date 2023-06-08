@@ -47,16 +47,20 @@ TcpCubicSenderBytes::TcpCubicSenderBytes(
 
 TcpCubicSenderBytes::~TcpCubicSenderBytes() {}
 
+//设置带宽和rtt,设置cnwd
 void TcpCubicSenderBytes::SetCongestionWindowFromBandwidthAndRtt(
     QuicBandwidth bandwidth,
     QuicTime::Delta rtt) {
+    //bandwidth -> cwnd
   QuicByteCount new_congestion_window = bandwidth.ToBytesPerPeriod(rtt);
+  //[min_congestion_window_ ,kMaxResumptionCongestionWindow * kDefaultTCPMSS]
   if (FLAGS_quic_no_lower_bw_resumption_limit) {
     // Limit new CWND if needed.
     congestion_window_ =
         max(min_congestion_window_,
             min(new_congestion_window,
                 kMaxResumptionCongestionWindow * kDefaultTCPMSS));
+  //[kMinCongestionWindowForBandwidthResumption * kDefaultTCPMSS, kMaxResumptionCongestionWindow * kDefaultTCPMSS]
   } else {
     congestion_window_ =
         max(min(new_congestion_window,
@@ -89,10 +93,17 @@ void TcpCubicSenderBytes::OnPacketLost(QuicPacketNumber packet_number,
                                        QuicByteCount bytes_in_flight) {
   // TCP NewReno (RFC6582) says that once a loss occurs, any losses in packets
   // already sent should be treated as a single loss event, since it's expected.
+  //把多个lost认为是一个lost.
+  //第一个lost来的时候,largest_sent_at_last_cutback_ = max_send.
+  //如果在largest_sent_at_last_cutback_之前丢的包都
+  //首先检查如果丢失的数据包是之前已经发送的,则忽略(可能是由于延迟)。
   if (packet_number <= largest_sent_at_last_cutback_) {
+      //在慢速启动中拥塞
     if (last_cutback_exited_slowstart_) {
       ++stats_->slowstart_packets_lost;
       stats_->slowstart_bytes_lost += lost_bytes;
+      //如果仍在缓慢启动模式中遇到数据包丢失
+      //则对拥塞窗口进行较大幅度的减小,以快速减少发送速度,并将慢启动阈值设置为当前窗口,退出缓慢启动模式
       if (slow_start_large_reduction_) {
         // Reduce congestion window by lost_bytes for every loss.
         congestion_window_ =
@@ -104,7 +115,11 @@ void TcpCubicSenderBytes::OnPacketLost(QuicPacketNumber packet_number,
              << " because it was sent prior to the last CWND cutback.";
     return;
   }
+
+
   ++stats_->tcp_loss_events;
+  //在缓慢启动模式下,拥塞窗口以指数级增长。一旦发生丢包,很可能表示网络已拥塞。
+  //所以数据包丢失时,TCP会退出缓慢启动模式,进入拥塞避免(congestion avoidance)模式
   last_cutback_exited_slowstart_ = InSlowStart();
   if (InSlowStart()) {
     ++stats_->slowstart_packets_lost;
@@ -115,25 +130,35 @@ void TcpCubicSenderBytes::OnPacketLost(QuicPacketNumber packet_number,
   }
 
   // TODO(jri): Separate out all of slow start into a separate class.
+  //如果慢速启动中,并且允许在慢启动阶段快速降低cwnd
   if (slow_start_large_reduction_ && InSlowStart()) {
     DCHECK_LT(kDefaultTCPMSS, congestion_window_);
+    //检查拥塞窗口大于等于 2 倍初始慢启动窗口,会将最小慢启动退出窗口设为当前值的一半
     if (congestion_window_ >= 2 * initial_tcp_congestion_window_) {
       min_slow_start_exit_window_ = congestion_window_ / 2;
     }
+    //然后将拥塞窗口减少 kDefaultTCPMSS 的值,以快速减小发送速度
     congestion_window_ = congestion_window_ - kDefaultTCPMSS;
+  //如果是reno拥塞控制算法,,则应用 RenoBeta() 公式更新窗口
   } else if (reno_) {
+      // Cubic 算法,则调用 Cubic 公式更新窗口大小
     congestion_window_ = congestion_window_ * RenoBeta();
   } else {
     congestion_window_ =
         cubic_.CongestionWindowAfterPacketLoss(congestion_window_);
   }
+
   if (congestion_window_ < min_congestion_window_) {
     congestion_window_ = min_congestion_window_;
   }
+
+  //慢启动阈值设为当前拥塞窗口,退出慢启动模式
   slowstart_threshold_ = congestion_window_;
+  //重置上次减小拥塞窗口时发送的最大包序号
   largest_sent_at_last_cutback_ = largest_sent_packet_number_;
   // Reset packet count from congestion avoidance mode. We start counting again
   // when we're out of recovery.
+    //重置确认包计数,开始新的周期
   num_acked_packets_ = 0;
   DVLOG(1) << "Incoming loss; congestion window: " << congestion_window_
            << " slowstart threshold: " << slowstart_threshold_;
@@ -153,16 +178,24 @@ void TcpCubicSenderBytes::MaybeIncreaseCwnd(
     QuicPacketNumber acked_packet_number,
     QuicByteCount acked_bytes,
     QuicByteCount bytes_in_flight) {
+    //首先检查是否仍处于拥塞控制的恢复(recovery)状态,如果是则直接返回。
   QUIC_BUG_IF(InRecovery()) << "Never increase the CWND during recovery.";
   // Do not increase the congestion window unless the sender is close to using
   // the current window.
+
+  //不是满负载状态,就是应用受限状态.
+  //如果为应用受限状态,不增加窗口.
   if (!IsCwndLimited(bytes_in_flight)) {
     cubic_.OnApplicationLimited();
     return;
   }
+
+  //检查是否拥塞窗口已满,如果是则直接返回。
   if (congestion_window_ >= max_congestion_window_) {
     return;
   }
+
+  //满启动阶段,倍数增.
   if (InSlowStart()) {
     // TCP slow start, exponential growth, increase by one for each ACK.
     congestion_window_ += kDefaultTCPMSS;
@@ -170,12 +203,18 @@ void TcpCubicSenderBytes::MaybeIncreaseCwnd(
              << " slowstart threshold: " << slowstart_threshold_;
     return;
   }
+
+  //在拥塞避免阶段
   // Congestion avoidance.
+
+  //reno
   if (reno_) {
     // Classic Reno congestion avoidance.
     ++num_acked_packets_;
     // Divide by num_connections to smoothly increase the CWND at a faster rate
     // than conventional Reno.
+    //当计数器大于拥塞窗口大小除以 MSS 之后
+    //则增加一个 MSS 的拥塞窗口大小
     if (num_acked_packets_ * num_connections_ >=
         congestion_window_ / kDefaultTCPMSS) {
       congestion_window_ += kDefaultTCPMSS;
@@ -185,6 +224,7 @@ void TcpCubicSenderBytes::MaybeIncreaseCwnd(
     DVLOG(1) << "Reno; congestion window: " << congestion_window_
              << " slowstart threshold: " << slowstart_threshold_
              << " congestion window count: " << num_acked_packets_;
+  //cubic
   } else {
     congestion_window_ =
         min(max_congestion_window_,
@@ -195,7 +235,10 @@ void TcpCubicSenderBytes::MaybeIncreaseCwnd(
   }
 }
 
+
+
 void TcpCubicSenderBytes::HandleRetransmissionTimeout() {
+    //一朝回到解放前
   cubic_.Reset();
   slowstart_threshold_ = congestion_window_ / 2;
   congestion_window_ = min_congestion_window_;

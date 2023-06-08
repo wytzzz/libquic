@@ -233,8 +233,12 @@ enum TransmissionType : int8_t {
 };
 
 enum HasRetransmittableData : int8_t {
-  NO_RETRANSMITTABLE_DATA,
-  HAS_RETRANSMITTABLE_DATA,
+    //
+  NO_RETRANSMITTABLE_DATA,  //表示没有需要重传的数据
+  HAS_RETRANSMITTABLE_DATA, //表示有需要重传的数据
+  //当此参数为NO_RETRANSMITTABLE_DATA时,表示当前要发送的报文中不包含任何需要重传的可靠数据,仅包含像ACK之类的不可靠数据。这种情况下,可以立即发送数据包
+  //当参数为HAS_RETRANSMITTABLE_DATA时,表示当前要发送的数据包含需要重传的可靠数据。这时需判断连接的拥塞控制机制,计算何时可以发送数据包。
+  // 因为发送可靠数据需要遵循拥塞控制和流控规则,不能像ACK那样立即发送,以免引起网络拥塞。
 };
 
 enum IsHandshake : int8_t { NOT_HANDSHAKE, IS_HANDSHAKE };

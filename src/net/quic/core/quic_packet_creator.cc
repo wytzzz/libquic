@@ -138,7 +138,8 @@ void QuicPacketCreator::UpdatePacketNumberLength(
   }
 }
 
-//创建steam farme
+//所以,这个方法主要用于将应用层数据构造为QUIC STREAM帧,并尝试添加到数据包中进行发送。
+// 其中,对加密数据流的数据进行了特殊检查,确保CHLO不会跨数据包发送。只有在有足够空间且未发送敏感数据的情况下,才可以成功添加构造的STREAM帧
 bool QuicPacketCreator::ConsumeData(QuicStreamId id,
                                     QuicIOVector iov,
                                     size_t iov_offset,
@@ -150,9 +151,11 @@ bool QuicPacketCreator::ConsumeData(QuicStreamId id,
     return false;
   }
 
-  //生成QuicFrame
+  //考虑packet剩余空间和用户数据的size,生成一个frame
   CreateStreamFrame(id, iov, iov_offset, offset, fin, frame);
   // Explicitly disallow multi-packet CHLOs.
+  //如果是加密数据流且 constructed STREAM帧长度大于等于CHLO长度,且第一个字节值为kCHLO,
+  //则检查constructed STREAM帧长度是否等于iov长度。如果不等,显示错误,因为CHLO不能跨数据包,并关闭连接
   if (id == kCryptoStreamId &&
       frame->stream_frame->data_length >= sizeof(kCHLO) &&
       strncmp(frame->stream_frame->data_buffer,
@@ -169,12 +172,13 @@ bool QuicPacketCreator::ConsumeData(QuicStreamId id,
       return false;
     }
   }
-  //添加frame
+  //将生成的stream frame添加到packet中
   if (!AddFrame(*frame, /*save_retransmittable_frames=*/true)) {
     // Fails if we try to write unencrypted stream data.
     delete frame->stream_frame;
     return false;
   }
+  //如果需要完整填充,设置num_padding_bytes为-1,表示添加最大数量的填充。
   if (needs_full_padding) {
     packet_.num_padding_bytes = -1;
   }
@@ -208,8 +212,7 @@ void QuicPacketCreator::CreateStreamFrame(QuicStreamId id,
                                           QuicStreamOffset offset,
                                           bool fin,
                                           QuicFrame* frame) {
-
-//首先，使用 DCHECK_GT 宏来检查当前数据包的最大长度（max_packet_length_）是否大于数据流帧头的开销，以确保数据流帧可以被容纳在当前数据包中。
+  //检查数据包最大长度是否大于STREAM帧头部开销,以确保STREAM帧可以容纳在当前数据包中。
   DCHECK_GT(max_packet_length_,
             StreamFramePacketOverhead(framer_->version(), connection_id_length_,
                                       kIncludeVersion, kIncludePathId,
@@ -217,10 +220,12 @@ void QuicPacketCreator::CreateStreamFrame(QuicStreamId id,
                                       PACKET_6BYTE_PACKET_NUMBER, offset));
 
 
+  //如果必要,调用MaybeUpdatePacketNumberLength()更新数据包序号字段长度。
   if (!FLAGS_quic_simple_packet_number_length_2) {
     MaybeUpdatePacketNumberLength();
   }
 
+  //使用QUIC_BUG_IF宏确保有足够空间可以添加STREAM帧。如果没有显示错误
   QUIC_BUG_IF(!HasRoomForStreamFrame(id, offset))
       << "No room for Stream frame, BytesFree: " << BytesFree()
       << " MinStreamFrameSize: "
@@ -233,18 +238,20 @@ void QuicPacketCreator::CreateStreamFrame(QuicStreamId id,
     return;
   }
 
-
+  //计算iov中剩余的数据量和当前packet还能放入的负载大小的最小值作为这次要构造的STREAM帧数据量bytes_consumed。
   const size_t data_size = iov.total_length - iov_offset;
   size_t min_frame_size = QuicFramer::GetMinStreamFrameSize(
       id, offset, /* last_frame_in_packet= */ true);
   size_t bytes_consumed = min<size_t>(BytesFree() - min_frame_size, data_size);
 
+  //如果数据量 bytes_consumed刚好消耗完iov中所有剩余数据,并且设置了fin,则设置set_fin为true,表明这是最后一个STREAM帧
   bool set_fin = fin && bytes_consumed == data_size;  // Last frame.
+  //调用NewStreamBuffer()方法分配bytes_consumed大小的内存空间buffer,用以存放要发送的数据
   UniqueStreamBuffer buffer =
       NewStreamBuffer(buffer_allocator_, bytes_consumed);
-
+  //调用CopyToBuffer()方法将iov中的数据复制到buffer中
   CopyToBuffer(iov, iov_offset, bytes_consumed, buffer.get());
-  //生成frame结构
+  //构造QuicStreamFrame,设置id、set_fin、offset、data_length为bytes_consumed和std::move(buffer)
   *frame = QuicFrame(new QuicStreamFrame(id, set_fin, offset, bytes_consumed,
                                          std::move(buffer)));
 }
@@ -353,6 +360,8 @@ void QuicPacketCreator::ReserializeAllFrames(
   packet_.encryption_level = default_encryption_level;
 }
 
+
+//用来序列化当前数据包中的所有待发送帧,并通知上层。
 void QuicPacketCreator::Flush() {
   if (!HasPendingFrames()) {
     return;
@@ -360,6 +369,7 @@ void QuicPacketCreator::Flush() {
 
   // TODO(rtenneti): Change the default 64 alignas value (used the default
   // value from CACHELINE_SIZE).
+  //定义seralized_packet_buffer数组,长度为kMaxPacketSize,用于存放序列化后的数据包数据。
   ALIGNAS(64) char seralized_packet_buffer[kMaxPacketSize];
   //序列化一批frames
   SerializePacket(seralized_packet_buffer, kMaxPacketSize);
@@ -491,9 +501,13 @@ size_t QuicPacketCreator::ExpansionOnNewFrame() const {
   return has_trailing_stream_frame ? kQuicStreamPayloadLengthSize : 0;
 }
 
-//还剩多少剩余字节.
+//过计算当前数据包剩余空间与新帧开销,实现了判断当前数据包是否有足够空间添加新帧的逻辑
 size_t QuicPacketCreator::BytesFree() {
+    //max_plaintext_size_是否大于等于当前数据包大小PacketSize()。
+    //max_plaintext_size_表示数据包最大的明文负载大小,PacketSize()返回当前数据包的总大小。
   DCHECK_GE(max_plaintext_size_, PacketSize());
+  //计算当前数据包大小加上在添加新帧后expansion的大小,取二者最小值
+  //从max_plaintext_size_中减去上一步计算得到的最小值,得到剩余的空间字节数
   return max_plaintext_size_ -
          min(max_plaintext_size_, PacketSize() + ExpansionOnNewFrame());
 }
@@ -636,13 +650,13 @@ bool QuicPacketCreator::ShouldRetransmit(const QuicFrame& frame) {
   }
 }
 
-//将frame组packet,写入到queue_frame
-//具体来说，这个方法会检查是否可以将该数据帧添加到当前数据包中，
-//如果可以，则将该数据帧添加到队列中，并更新数据包的大小和状态等信息。如果当前数据包已经满了，则会将数据包发送出去，并创建一个新的数据包。
+
+
+//主要用于将指定的数据帧添加到当前数据包中,并进行相应的标记和状态更新。它需要判断数据包加密状态和剩余空间来决定是否可以添加帧。
 bool QuicPacketCreator::AddFrame(const QuicFrame& frame,
                                  bool save_retransmittable_frames) {
   DVLOG(1) << "Adding frame: " << frame;
-  //如果添加的是一个 STREAM_FRAME 数据帧，并且当前数据包未加密，则会报告一个错误并返回 false。
+  //如果待添加的数据帧是STREAM帧,且当前数据包未加密,则报告错误并返回false。因为未加密的数据包不允许发送STREAM数据
   if (frame.type == STREAM_FRAME &&
       frame.stream_frame->stream_id != kCryptoStreamId &&
       packet_.encryption_level == ENCRYPTION_NONE) {
@@ -658,22 +672,22 @@ bool QuicPacketCreator::AddFrame(const QuicFrame& frame,
     MaybeUpdatePacketNumberLength();
   }
 
-  //计算待添加数据帧的序列化长度。如果当前数据包已满，则调用 Flush 方法将当前数据包发送出去，并返回 false。
-  //这里的last参数为true.
+  //调用framer_的GetSerializedFrameLength()方法计算待添加帧的序列化长度。
   size_t frame_len = framer_->GetSerializedFrameLength(
       frame, BytesFree(), queued_frames_.empty(), true,
       packet_.packet_number_length);
+  //如果当前帧无法添加返回0,进而调用Flush()方法发送当前数据包,并返回false.
   if (frame_len == 0) {
     // Current open packet is full.
     Flush();
     return false;
   }
   DCHECK_LT(0u, packet_size_);
-  //更新当前数据包的大小。
+  //更新当前数据包大小packet_size_,增加ExpansionOnNewFrame()和序列化长度frame_len。
   packet_size_ += ExpansionOnNewFrame() + frame_len;
 
-  //如果该数据帧需要进行重传，则将该数据帧添加到重传队列中，并将其添加到待发送队列中。
-  if (save_retransmittable_frames && ShouldRetransmit(frame)) {
+    //如果待添加的帧需要重传,则将其添加到重传队列和待发送队列中。如果是加密数据流的帧,则标记当前数据包为包含加密握手数据。
+    if (save_retransmittable_frames && ShouldRetransmit(frame)) {
     if (packet_.retransmittable_frames.empty()) {
       packet_.retransmittable_frames.reserve(2);
     }
@@ -689,7 +703,7 @@ bool QuicPacketCreator::AddFrame(const QuicFrame& frame,
     queued_frames_.push_back(frame);
   }
 
-  //更新状态
+  //如果添加的是ACK帧,则标记当前数据包包含ACK;如果是STOP_WAITING帧,标记包含该帧。
   if (frame.type == ACK_FRAME) {
     packet_.has_ack = true;
   }

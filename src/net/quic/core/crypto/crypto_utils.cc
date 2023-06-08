@@ -226,6 +226,7 @@ QuicErrorCode CryptoUtils::ValidateServerHello(
   const QuicTag* supported_version_tags;
   size_t num_supported_versions;
 
+  //支持的version
   if (server_hello.GetTaglist(kVER, &supported_version_tags,
                               &num_supported_versions) != QUIC_NO_ERROR) {
     *error_details = "server hello missing version list";
@@ -237,9 +238,11 @@ QuicErrorCode CryptoUtils::ValidateServerHello(
       mismatch = QuicTagToQuicVersion(supported_version_tags[i]) !=
                  negotiated_versions[i];
     }
+
     // The server sent a list of supported versions, and the connection
     // reports that there was a version negotiation during the handshake.
     // Ensure that these two lists are identical.
+    //版本协商失败
     if (mismatch) {
       *error_details = "Downgrade attack detected";
       return QUIC_VERSION_NEGOTIATION_MISMATCH;

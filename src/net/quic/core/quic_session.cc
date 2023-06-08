@@ -92,6 +92,7 @@ void QuicSession::OnStreamFrame(const QuicStreamFrame& frame) {
     }
     return;
   }
+  //将frame给到对应的流
   stream->OnStreamFrame(frame);
 }
 
@@ -223,6 +224,9 @@ bool QuicSession::WillingAndAbleToWrite() const {
   // they don't get blocked by connection level flow control. Otherwise only
   // schedule a write if we are not flow control blocked at the connection
   // level.
+  //
+  //如果crypto流或headers流被阻塞,则返回true。因为这两个流不受连接层流控的影响
+  //否则,只有当连接层未被流控阻塞,并且有缓存待发送数据时,才返回true
   return write_blocked_streams_.HasWriteBlockedCryptoOrHeadersStream() ||
          (!flow_controller_.IsBlocked() &&
           write_blocked_streams_.HasWriteBlockedDataStreams());
@@ -256,6 +260,7 @@ QuicConsumedData QuicSession::WritevData(
   // it might end up resulting in unencrypted stream data being sent.
   // While this is impossible to avoid given sufficient corruption, this
   // seems like a reasonable mitigation.
+
   if (id == kCryptoStreamId && stream != GetCryptoStream()) {
     QUIC_BUG << "Stream id mismatch";
     connection_->CloseConnection(
@@ -265,16 +270,17 @@ QuicConsumedData QuicSession::WritevData(
     return QuicConsumedData(0, false);
   }
 
+  //只有handshake流能能在建立加密之前发送
   if (!IsEncryptionEstablished() && id != kCryptoStreamId) {
     // Do not let streams write without encryption. The calling stream will end
     // up write blocked until OnCanWrite is next called.
     return QuicConsumedData(0, false);
   }
 
-  //通过connection发送数据
+  //调用connection的SendStreamData()方法发送数据。这个方法会根据id找到对应的QUIC流,并把iov中的数据发送到网络。
   QuicConsumedData data =
       connection_->SendStreamData(id, iov, offset, fin, ack_notifier_delegate);
-  //更新滑动窗口
+  //调用write_blocked_streams_的UpdateBytesForStream()方法更新id对应的流的滑动窗口。
   write_blocked_streams_.UpdateBytesForStream(id, data.bytes_consumed);
   return data;
 }
@@ -393,9 +399,12 @@ void QuicSession::UpdateFlowControlOnFinalReceivedByteOffset(
     }
   }
 
+  //调用flow_controller_的AddBytesConsumed()方法增加offset_diff这么多字节的消耗量。
   flow_controller_.AddBytesConsumed(offset_diff);
+
+  //locally_closed_streams_highest_offset_保存了所有half-close的流的最高接收偏移量,用于计算总的流控消耗量。
   locally_closed_streams_highest_offset_.erase(it);
-  //更新中间态.
+  //如果是incoming流,减少num_locally_closed_incoming_streams_highest_offset_。
   if (IsIncomingStream(stream_id)) {
     --num_locally_closed_incoming_streams_highest_offset_;
   }
@@ -409,11 +418,13 @@ bool QuicSession::IsCryptoHandshakeConfirmed() {
   return GetCryptoStream()->handshake_confirmed();
 }
 
+//完成参数协商
 void QuicSession::OnConfigNegotiated() {
   connection_->SetFromConfig(config_);
-
+1
   const QuicVersion version = connection()->version();
   uint32_t max_streams = 0;
+  //获取max in & out stream
   if (version > QUIC_VERSION_34 &&
       config_.HasReceivedMaxIncomingDynamicStreams()) {
     max_streams = config_.ReceivedMaxIncomingDynamicStreams();
@@ -442,12 +453,14 @@ void QuicSession::OnConfigNegotiated() {
     set_max_open_incoming_streams(max_incoming_streams);
   }
 
+  //设置初始化流控窗口
   if (config_.HasReceivedInitialStreamFlowControlWindowBytes()) {
     // Streams which were created before the SHLO was received (0-RTT
     // requests) are now informed of the peer's initial flow control window.
     OnNewStreamFlowControlWindow(
         config_.ReceivedInitialStreamFlowControlWindowBytes());
   }
+
   if (config_.HasReceivedInitialSessionFlowControlWindowBytes()) {
     OnNewSessionFlowControlWindow(
         config_.ReceivedInitialSessionFlowControlWindowBytes());

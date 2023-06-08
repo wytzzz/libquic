@@ -113,10 +113,12 @@ void QuicCryptoServerStream::OnHandshakeMessage(
     return;
   }
 
+  //对传入的message握手消息(HandshakeMessage类型)计算HASH,并将结果存入chlo_hash_输出参数中
   CryptoUtils::HashHandshakeMessage(message, &chlo_hash_);
 
   std::unique_ptr<ValidateCallback> cb(new ValidateCallback(this));
   validate_client_hello_cb_ = cb.get();
+  //验证
   crypto_config_->ValidateClientHello(
       message, session()->connection()->peer_address().address(),
       session()->connection()->self_address().address(), version(),
@@ -139,6 +141,7 @@ void QuicCryptoServerStream::FinishProcessingHandshakeMessage(
   CryptoHandshakeMessage reply;
   DiversificationNonce diversification_nonce;
   string error_details;
+  //调用ProcessClientHello()处理CHLO消息。如果失败,关闭连接并返回。
   QuicErrorCode error =
       ProcessClientHello(result, std::move(details), &reply,
                          &diversification_nonce, &error_details);
@@ -148,6 +151,7 @@ void QuicCryptoServerStream::FinishProcessingHandshakeMessage(
     return;
   }
 
+  //如果reply消息的标签不是kSHLO,则发送reply消息。如果是SREJ,还需要保留crypto包以进行重传。然后关闭连接并返回。
   if (reply.tag() != kSHLO) {
     if (reply.tag() == kSREJ) {
       DCHECK(use_stateless_rejects_if_peer_supported_);
@@ -157,6 +161,7 @@ void QuicCryptoServerStream::FinishProcessingHandshakeMessage(
       // retransmitted.
       session()->connection()->EnableSavingCryptoPackets();
     }
+    //发送reject数据包
     SendHandshakeMessage(reply);
 
     if (reply.tag() == kSREJ) {
@@ -176,6 +181,7 @@ void QuicCryptoServerStream::FinishProcessingHandshakeMessage(
   // If we are returning a SHLO then we accepted the handshake.  Now
   // process the negotiated configuration options as part of the
   // session config.
+  //如果reply消息是SHLO,继续处理。调用服务器QuicConfig的ProcessPeerHello()处理CHLO中的参数。如果失败,关闭连接并返回。
   QuicConfig* config = session()->config();
   OverrideQuicConfigDefaults(config);
   //server 参数协商
@@ -185,8 +191,10 @@ void QuicCryptoServerStream::FinishProcessingHandshakeMessage(
     return;
   }
 
+  //调用session()->OnConfigNegotiated()进行参数协商后的处理。
   session()->OnConfigNegotiated();
 
+  //将QuicConfig的参数添加到reply(SHLO)消息中。
   config->ToHandshakeMessage(&reply);
 
   // Receiving a full CHLO implies the client is prepared to decrypt with
@@ -194,6 +202,7 @@ void QuicCryptoServerStream::FinishProcessingHandshakeMessage(
   // write key.
   //
   // NOTE: the SHLO will be encrypted with the new server write key.
+  //设置ENCRYPTION_INITIAL级别的加密器和解密器。开始使用新服务端写密钥加密数据。
   session()->connection()->SetEncrypter(
       ENCRYPTION_INITIAL,
       crypto_negotiated_params_.initial_crypters.encrypter.release());
@@ -207,6 +216,8 @@ void QuicCryptoServerStream::FinishProcessingHandshakeMessage(
     session()->connection()->SetDiversificationNonce(diversification_nonce);
   }
 
+
+  //发送reply(SHLO)消息
   SendHandshakeMessage(reply);
 
   session()->connection()->SetEncrypter(
@@ -219,8 +230,10 @@ void QuicCryptoServerStream::FinishProcessingHandshakeMessage(
       crypto_negotiated_params_.forward_secure_crypters.decrypter.release(),
       false /* don't latch */);
 
+  //标记加密已建立和握手确认完成。
   encryption_established_ = true;
   handshake_confirmed_ = true;
+  //调用session()->OnCryptoHandshakeEvent(HANDSHAKE_CONFIRMED)进行确认后的处理。
   session()->OnCryptoHandshakeEvent(QuicSession::HANDSHAKE_CONFIRMED);
 }
 
@@ -380,6 +393,7 @@ bool QuicCryptoServerStream::GetBase64SHA256ClientChannelID(
   return true;
 }
 
+//这个函数ProcessClientHello()处理CHLO消息并生成SHLO/SREJ回复
 QuicErrorCode QuicCryptoServerStream::ProcessClientHello(
     const ValidateClientHelloResultCallback::Result& result,
     std::unique_ptr<ProofSource::Details> proof_source_details,
@@ -387,27 +401,33 @@ QuicErrorCode QuicCryptoServerStream::ProcessClientHello(
     DiversificationNonce* out_diversification_nonce,
     string* error_details) {
   const CryptoHandshakeMessage& message = result.client_hello;
+  //调用helper_->CanAcceptClientHello()校验CHLO消息。如果失败,返回QUIC_HANDSHAKE_FAILED。
   if (!helper_->CanAcceptClientHello(
           message, session()->connection()->self_address(), error_details)) {
     return QUIC_HANDSHAKE_FAILED;
   }
 
+  //如果CHLO消息包含服务器随机数,增加num_handshake_messages_with_server_nonces_计数。
   if (!result.info.server_nonce.empty()) {
     ++num_handshake_messages_with_server_nonces_;
   }
+  //如果CHLO消息包含带宽估计,保存到previous_cached_network_params_。
   // Store the bandwidth estimate from the client.
   if (result.cached_network_params.bandwidth_estimate_bytes_per_second() > 0) {
     previous_cached_network_params_.reset(
         new CachedNetworkParameters(result.cached_network_params));
   }
+  //保存source_address_tokens到previous_source_address_tokens_。
   previous_source_address_tokens_ = result.info.source_address_tokens;
 
+  //生成服务器指定的连接ID,用于无状态拒绝。
   const bool use_stateless_rejects_in_crypto_config =
       use_stateless_rejects_if_peer_supported_ &&
       peer_supports_stateless_rejects_;
   QuicConnection* connection = session()->connection();
   const QuicConnectionId server_designated_connection_id =
       GenerateConnectionIdForReject(use_stateless_rejects_in_crypto_config);
+  //从clienthello中解析出crypto_negotiated_params_ & crypto_proof_
   return crypto_config_->ProcessClientHello(
       result, /*reject_only=*/false, connection->connection_id(),
       connection->self_address().address(), connection->peer_address(),

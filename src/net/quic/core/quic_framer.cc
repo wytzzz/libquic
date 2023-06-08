@@ -291,7 +291,8 @@ size_t QuicFramer::GetSerializedFrameLength(
     return 0;
   }
 
-  //pading farme的长度,根据是否指定了padding长度生成frame
+  //如果是PADDING帧,则根据是否指定了填充字节数计算长度。如果指定了,长度为指定值;
+  // 否则长度为free_bytes,表示填充至数据包末尾
   if (frame.type == PADDING_FRAME) {
     if (frame.padding_frame.num_padding_bytes == -1) {
       // Full padding to the end of the packet.
@@ -306,7 +307,7 @@ size_t QuicFramer::GetSerializedFrameLength(
   }
 
 
-  //如果该帧序列化后的长度小于等于当前可用空间大小，则说明该帧可以完整地写入数据包中，因此返回该帧的序列化后的长度。
+  //调用ComputeFrameLength()方法计算待添加帧的序列化长度frame_len。如果小于等于free_bytes,说明该帧可以完整写入,返回frame_len
   size_t frame_len =
       ComputeFrameLength(frame, last_frame, packet_number_length);
   if (frame_len <= free_bytes) {
@@ -316,14 +317,12 @@ size_t QuicFramer::GetSerializedFrameLength(
   // Only truncate the first frame in a packet, so if subsequent ones go
   // over, stop including more frames.
 
-  //如果该帧序列化后的长度大于当前可用空间大小，则需要将该帧进行截断。
-  //如果该帧是数据包中的第一个帧，则可以尝试将该帧进行截断，以使得剩余的帧可以写入数据包中；
-  //否则直接返回 0，表示该帧无法写入数据包中。
+  //否则,如果是数据包中的第一个帧,可以考虑截断该帧;否则直接返回0,表示无法添加该帧
   if (!first_frame) {
     return 0;
   }
 
-  //如果是ack frame,则尝试截断ack frame.
+  //如果可以截断且是ACK帧,需要判断free_bytes是否大于ACK帧最小长度。如果大于,则可以截断ACK帧使其恰好可以添加,返回free_bytes。
   bool can_truncate =
       frame.type == ACK_FRAME &&
       free_bytes >=

@@ -1191,6 +1191,9 @@ void QuicConnection::SendVersionNegotiationPacket() {
   pending_version_negotiation_packet_ = false;
 }
 
+//这个方法主要用来发送QUIC流的数据。它首先会判断是否可以使用快速路径直接发送完整的数据包。
+//如果不可以,则调用packet_generator_进行序列化和发送。同时,它也在每发送一个数据包时尝试"捎带"发送ACK,这可以提高网络资源利用率。
+//数据的发送是在拥塞控制下的.
 QuicConsumedData QuicConnection::SendStreamData(
     QuicStreamId id,
     QuicIOVector iov,
@@ -1207,12 +1210,13 @@ QuicConsumedData QuicConnection::SendStreamData(
   // which decrypter will be used on an ack packet following a handshake
   // packet (a handshake packet from client to server could result in a REJ or a
   // SHLO from the server, leading to two different decrypters at the server.)
-
   ScopedRetransmissionScheduler alarm_delayer(this);
-  //尝试发送ack
+  //尝试将一个ack frame添加到packet中.
   ScopedPacketBundler ack_bundler(this, SEND_ACK_IF_PENDING);
   // The optimized path may be used for data only packets which fit into a
   // standard buffer and don't need padding.
+  //如果id != kCryptoStreamId并且packet_generator_没有排队的帧且iov总长度大于kMaxPacketSize
+  // ,则使用快速路径发送完整的数据包。否则,调用packet_generator_的ConsumeData()方法将应用层数据序列化后写入send_buffer
   if (id != kCryptoStreamId && !packet_generator_.HasQueuedFrames() &&
       iov.total_length > kMaxPacketSize) {
     // Use the fast path to send full data packets.
@@ -1317,7 +1321,6 @@ void QuicConnection::ProcessUdpPacket(const IPEndPoint& self_address,
     debug_visitor_->OnPacketReceived(self_address, peer_address, packet);
   }
 
-
   last_size_ = packet.length();
   current_packet_data_ = packet.data();
 
@@ -1374,10 +1377,11 @@ void QuicConnection::ProcessUdpPacket(const IPEndPoint& self_address,
 }
 
 void QuicConnection::OnCanWrite() {
+    //首先判断writer是否被阻塞,如果被阻塞直接返回
   DCHECK(!writer_->IsWriteBlocked());
 
   //然后获取当前可用的拥塞窗口大小和流控窗口大小，并根据这些信息选择要发送的数据包，并进行拥塞控制和流控控制。
-  // 如果发送的数据包被阻塞，那么它们将会被放入一个发送缓冲区中，等待下次发送。如果发送的数据包成功发送，则会更新连接的状态和发送相关的参数。
+  //如果发送的数据包被阻塞,那么它们将会被放入一个发送缓冲区中,等待下次发送。如果发送的数据包成功发送,则会更新连接的状态和发送相关的参数
   WriteQueuedPackets();
   WritePendingRetransmissions();
 
@@ -1385,23 +1389,29 @@ void QuicConnection::OnCanWrite() {
   // or the congestion manager to prohibit sending.  If we've sent everything
   // we had queued and we're still not blocked, let the visitor know it can
   // write more.
+  //判断是否可以继续写入数据
   if (!CanWrite(HAS_RETRANSMITTABLE_DATA)) {
     return;
   }
 
   {
+    //尝试发送之前排队的ack
     ScopedPacketBundler bundler(this, SEND_ACK_IF_QUEUED);
+    //通知访问者OnCanWrite(),并调用PostProcessAfterData()进行后续处理。
     visitor_->OnCanWrite();
     visitor_->PostProcessAfterData();
   }
 
   // After the visitor writes, it may have caused the socket to become write
   // blocked or the congestion manager to prohibit sending, so check again.
+  //如果访问者WillingAndAbleToWrite()且resume_writes_alarm_未设置,且CanWrite(HAS_RETRANSMITTABLE_DATA),则表明现在未被写阻塞,但某些流没有将所有字节写出。
+  // 注册"立即"恢复写操作,以便在其他连接和事件有机会使用线程之后继续写入
   if (visitor_->WillingAndAbleToWrite() && !resume_writes_alarm_->IsSet() &&
       CanWrite(HAS_RETRANSMITTABLE_DATA)) {
     // We're not write blocked, but some stream didn't write out all of its
     // bytes. Register for 'immediate' resumption so we'll keep writing after
     // other connections and events have had a chance to use the thread.
+    //resume_writes_alarm_恢复在写入定时器
     resume_writes_alarm_->Set(clock_->ApproximateNow());
   }
 }
@@ -1411,6 +1421,7 @@ void QuicConnection::WriteIfNotBlocked() {
     OnCanWrite();
   }
 }
+
 
 void QuicConnection::WriteAndBundleAcksIfNotBlocked() {
   if (!writer_->IsWriteBlocked()) {
@@ -1536,6 +1547,7 @@ void QuicConnection::WriteQueuedPackets() {
     SendVersionNegotiationPacket();
   }
 
+  //写入数据
   QueuedPacketList::iterator packet_iterator = queued_packets_.begin();
   while (packet_iterator != queued_packets_.end() &&
          WritePacket(&(*packet_iterator))) {
@@ -1548,6 +1560,7 @@ void QuicConnection::WriteQueuedPackets() {
 void QuicConnection::WritePendingRetransmissions() {
   // Keep writing as long as there's a pending retransmission which can be
   // written.
+  //重传
   while (sent_packet_manager_->HasPendingRetransmissions()) {
     const PendingRetransmission pending =
         sent_packet_manager_->NextPendingRetransmission();
@@ -1580,48 +1593,58 @@ void QuicConnection::NeuterUnencryptedPackets() {
   SetRetransmissionAlarm();
 }
 
+//判断是否应该将缓存中的frame组装乘一个packet了.
+//握手数据需要尽快发送和响应,以完成版本协商和加密参数协商,因此需要立即发送
+//非握手数据的发送还需要遵循连接的流控和拥塞控制规则,因此需要调用CanWrite()判断
 bool QuicConnection::ShouldGeneratePacket(
     HasRetransmittableData retransmittable,
     IsHandshake handshake) {
   // We should serialize handshake packets immediately to ensure that they
   // end up sent at the right encryption level.
+  //如果是握手数据(handshake == IS_HANDSHAKE),则立即返回true。这是因为握手数据需要立即序列化和发送,以确保它们以正确的加密级别发送
   if (handshake == IS_HANDSHAKE) {
     return true;
   }
-
+  //否则,调用CanWrite()判断是否可以发送数据。CanWrite()会判断连接状态、拥塞控制状态等来决定是否可以发送数据
   return CanWrite(retransmittable);
 }
 
+//考虑拥塞控制能否发送数据
 bool QuicConnection::CanWrite(HasRetransmittableData retransmittable) {
   if (!connected_) {
     return false;
   }
 
+  //如果writer被阻塞,调用visitor的OnWriteBlocked()方法,返回false。
   if (writer_->IsWriteBlocked()) {
     visitor_->OnWriteBlocked();
     return false;
   }
 
   // Allow acks to be sent immediately.
+  //如果是发送ACK,则立即返回true。因为ACK的发送优先级最高。
   if (retransmittable == NO_RETRANSMITTABLE_DATA) {
     return true;
   }
   // If the send alarm is set, wait for it to fire.
+  //如果发送警报已经设置,等待其触发,返回false。
   if (send_alarm_->IsSet()) {
     return false;
   }
 
   // TODO(fayang): If delay is not infinite, the next packet will be created and
   // sent on path_id.
+  //获取下一个数据包将要发送的路径id和现在的时间now。调用sent_packet_manager的TimeUntilSend()方法计算数据包应发送的延迟
   QuicPathId path_id = kInvalidPathId;
   QuicTime now = clock_->Now();
   QuicTime::Delta delay = sent_packet_manager_->TimeUntilSend(now, &path_id);
+  //如果延迟为无限,说明现在不能发送数据包,将send_alarm_取消,返回false。
   if (delay.IsInfinite()) {
     DCHECK_EQ(kInvalidPathId, path_id);
     send_alarm_->Cancel();
     return false;
   }
-
+  //如果path_id != kInvalidPathId,说明需要延迟发送,则更新send_alarm_,延迟发送,返回false
   DCHECK_NE(kInvalidPathId, path_id);
   // If the scheduler requires a delay, then we can not send this packet now.
   if (!delay.IsZero()) {
@@ -1630,6 +1653,7 @@ bool QuicConnection::CanWrite(HasRetransmittableData retransmittable) {
              << "ms";
     return false;
   }
+  //否则,说明可以立即发送,返回true。
   return true;
 }
 
@@ -2353,20 +2377,22 @@ QuicConnection::ScopedPacketBundler::ScopedPacketBundler(
   }
   // Move generator into batch mode. If caller wants us to include an ack,
   // check the delayed-ack timer to see if there's ack info to be sent.
+  //如果packet_generator不在批处理模式,则调用StartBatchOperations()进入批处理模式。这是因为要将ACK加入到数据包中,需要处于批处理模式
   if (!already_in_batch_mode_) {
     DVLOG(2) << "Entering Batch Mode.";
     connection_->packet_generator_.StartBatchOperations();
   }
-  //判断是否应该发送ack了.
+  //调用ShouldSendAck()判断是否应该发送ACK。
   if (ShouldSendAck(ack_mode)) {
     DVLOG(1) << "Bundling ack with outgoing packet.";
     DCHECK(ack_mode == SEND_ACK || connection_->ack_frame_updated() ||
            connection_->stop_waiting_count_ > 1);
-    //发送ack
+    //调用SendAck()发送ACK帧。
     connection_->SendAck();
   }
 }
 
+//如果ack_mode表示应发送ACK,或者ack_frame_updated()返回true(表示有更新的ACK信息),或者stop_waiting_count_>1(表明有多个收到的数据包没有ACK),则应发送ACK。
 bool QuicConnection::ScopedPacketBundler::ShouldSendAck(
     AckBundling ack_mode) const {
   switch (ack_mode) {

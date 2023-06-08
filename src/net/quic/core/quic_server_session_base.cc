@@ -36,6 +36,7 @@ QuicServerSessionBase::QuicServerSessionBase(
 
 QuicServerSessionBase::~QuicServerSessionBase() {}
 
+
 void QuicServerSessionBase::Initialize() {
   crypto_stream_.reset(
       CreateQuicCryptoServerStream(crypto_config_, compressed_certs_cache_));
@@ -136,6 +137,7 @@ void QuicServerSessionBase::OnCongestionWindowChange(QuicTime now) {
   // The bandwidth recorder has recorded at least one sustained bandwidth
   // estimate. Check that it's substantially different from the last one that
   // we sent to the client, and if so, send the new one.
+
   QuicBandwidth new_bandwidth_estimate =
       bandwidth_recorder->BandwidthEstimate();
 
@@ -189,7 +191,6 @@ void QuicServerSessionBase::OnCongestionWindowChange(QuicTime now) {
   if (!serving_region_.empty()) {
     cached_network_params.set_serving_region(serving_region_);
   }
-
   crypto_stream_->SendServerConfigUpdate(&cached_network_params);
 
   connection()->OnSendConnectionState(cached_network_params);

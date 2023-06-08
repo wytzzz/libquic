@@ -52,10 +52,12 @@ class NET_EXPORT_PRIVATE TcpCubicSenderBytes : public TcpCubicSenderBase {
   // TcpCubicSenderBase methods
   void SetCongestionWindowFromBandwidthAndRtt(QuicBandwidth bandwidth,
                                               QuicTime::Delta rtt) override;
+
   void SetCongestionWindowInPackets(QuicPacketCount congestion_window) override;
   void SetMinCongestionWindowInPackets(
       QuicPacketCount congestion_window) override;
   void ExitSlowstart() override;
+  
   void OnPacketLost(QuicPacketNumber largest_loss,
                     QuicByteCount lost_bytes,
                     QuicByteCount bytes_in_flight) override;

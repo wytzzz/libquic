@@ -504,10 +504,13 @@ void QuicCryptoServerConfig::ValidateClientHello(
     std::unique_ptr<ValidateClientHelloResultCallback> done_cb) const {
   const QuicWallTime now(clock->WallNow());
 
+  //获取当前时间now和CHLO消息内容client_hello。并初始化结果对象result。
   std::unique_ptr<ValidateClientHelloResultCallback::Result> result(
       new ValidateClientHelloResultCallback::Result(client_hello, client_ip,
                                                     now));
 
+
+  //从CHLO消息中提取请求的服务器配置ID - requested_scid。
   StringPiece requested_scid;
   client_hello.GetStringPiece(kSCID, &requested_scid);
 
@@ -517,10 +520,12 @@ void QuicCryptoServerConfig::ValidateClientHello(
   {
     base::AutoLock locked(configs_lock_);
 
+    //获取主(当前使用)服务器配置primary_config以及其orbit值。如果不存在配置,结果状态设为QUIC_CRYPTO_INTERNAL_ERROR。
     if (!primary_config_.get()) {
       result->error_code = QUIC_CRYPTO_INTERNAL_ERROR;
       result->error_details = "No configurations loaded";
     } else {
+        //检查是否需要在now时间点切换到新的主配置。如果需要,执行 SelectNewPrimaryConfig()进行切换
       if (!next_config_promotion_time_.IsZero() &&
           next_config_promotion_time_.IsAfter(now)) {
         SelectNewPrimaryConfig(now);
@@ -531,10 +536,13 @@ void QuicCryptoServerConfig::ValidateClientHello(
       memcpy(primary_orbit, primary_config_->orbit, sizeof(primary_orbit));
     }
 
+    //所以简单来说,这个函数会根据客户端在CHLO消息中请求的SCID字段,查找并返回对应的服务器配置对象(如果存在)。
+    //后续的配置会使用这个
     requested_config = GetConfigWithScid(requested_scid);
     primary_config = primary_config_;
     crypto_proof->config = primary_config_;
   }
+
 
   if (result->error_code == QUIC_NO_ERROR) {
     if (version > QUIC_VERSION_30) {
@@ -544,10 +552,13 @@ void QuicCryptoServerConfig::ValidateClientHello(
       crypto_proof->signature = "";
       crypto_proof->cert_sct = "";
     }
+    //调用EvaluateClientHello()进行深入校验。传入各配置信息、orbit值、证明对象等
+    //EvaluateClientHello()这个函数包含了证书校验、token校验、CHLO字段校验等全部深入逻辑
     EvaluateClientHello(server_ip, version, primary_orbit, requested_config,
                         primary_config, crypto_proof, std::move(result),
                         std::move(done_cb));
   } else {
+    //回调结果
     done_cb->Run(std::move(result), /* details = */ nullptr);
   }
 }
@@ -578,6 +589,7 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
       validate_chlo_result.client_hello;
   const ClientHelloInfo& info = validate_chlo_result.info;
 
+  //验证版本
   QuicErrorCode valid = CryptoUtils::ValidateClientHello(
       client_hello, version, supported_versions, error_details);
   if (valid != QUIC_NO_ERROR)
@@ -587,6 +599,10 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
   client_hello.GetStringPiece(kSCID, &requested_scid);
   const QuicWallTime now(clock->WallNow());
 
+  //requested_config:表示客户端在CHLO消息中请求的服务器配置
+  //primary_config:表示服务器端本地的主要/首选的配置
+  //服务器会首先根据客户端请求的配置(如果有)选择一个requested_config。
+  //如果客户端未指定配置,或者未找到匹配请求的配置,服务器会选择primary_config作为服务器端的最终配置。
   scoped_refptr<Config> requested_config;
   scoped_refptr<Config> primary_config;
   {
@@ -597,6 +613,8 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
       return QUIC_CRYPTO_INTERNAL_ERROR;
     }
 
+    //为了定期地执行配置升级检查与操作,QUIC服务器需要维护一个定时器。
+    // next_config_promotion_time_变量就是这个定时器,它会在每个配置升级检查时被更新为下次检查的时间戳。
     if (!next_config_promotion_time_.IsZero() &&
         next_config_promotion_time_.IsAfter(now)) {
       SelectNewPrimaryConfig(now);
@@ -617,6 +635,7 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
 
   out->Clear();
 
+  //调用ClientDemandsX509Proof()检查CHLO消息是否包含对X509证书的要求。如果不包含,返回QUIC_UNSUPPORTED_PROOF_DEMAND错误。
   if (!ClientDemandsX509Proof(client_hello)) {
     *error_details = "Missing or invalid PDMD";
     return QUIC_UNSUPPORTED_PROOF_DEMAND;
@@ -625,6 +644,7 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
   string chlo_hash;
   CryptoUtils::HashHandshakeMessage(client_hello, &chlo_hash);
   // No need to get a new proof if one was already generated.
+  //调用proof_source_的GetProof()方法生成证明材料,包括证书链和签名等。如果失败,返回QUIC_HANDSHAKE_FAILED错误
   if (!crypto_proof->chain &&
       !proof_source_->GetProof(server_ip, info.sni.as_string(),
                                primary_config->serialized, version, chlo_hash,
@@ -638,7 +658,7 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
       cert_sct.empty()) {
     params->sct_supported_by_client = true;
   }
-
+  //如果info包含任何拒绝原因,或者未选择requested_config,调用BuildRejection()生成拒绝消息。这可能发生在证书要求校验失败的情况下。
   if (!info.reject_reasons.empty() || !requested_config.get()) {
     BuildRejection(version, clock->WallNow(), *primary_config, client_hello,
                    info, validate_chlo_result.cached_network_params,
@@ -655,6 +675,7 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
   const QuicTag* their_aeads;
   const QuicTag* their_key_exchanges;
   size_t num_their_aeads, num_their_key_exchanges;
+  //调用GetTaglist()方法解析CHLO消息中的AEAD和KEXS字段,必须各包含一个值。否则返回QUIC_INVALID_CRYPTO_MESSAGE_PARAMETER错误
   if (client_hello.GetTaglist(kAEAD, &their_aeads, &num_their_aeads) !=
           QUIC_NO_ERROR ||
       client_hello.GetTaglist(kKEXS, &their_key_exchanges,
@@ -664,6 +685,7 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
     return QUIC_INVALID_CRYPTO_MESSAGE_PARAMETER;
   }
 
+  //调用FindMutualTag()在requested_config所支持的AEAD和KEXS算法中查找与客户端支持的算法相匹配的一组。如果未找到,返回QUIC_CRYPTO_NO_SUPPORT错误。
   size_t key_exchange_index;
   if (!QuicUtils::FindMutualTag(requested_config->aead, their_aeads,
                                 num_their_aeads, QuicUtils::LOCAL_PRIORITY,
@@ -676,6 +698,7 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
     return QUIC_CRYPTO_NO_SUPPORT;
   }
 
+  //同样调用FindMutualTag()查找TBKP(Token Binding Key Parameter)值。如果请求的配置中定义了TBKP但未在CHLO中找到,返回QUIC_INVALID_CRYPTO_MESSAGE_PARAMETER错误。
   if (!requested_config->tb_key_params.empty()) {
     const QuicTag* their_tbkps;
     size_t num_their_tbkps;
@@ -695,12 +718,15 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
     }
   }
 
+  //解析CHLO消息中的PUBS字段,获取公钥值。如果未找到,返回QUIC_INVALID_CRYPTO_MESSAGE_PARAMETER错误。
   StringPiece public_value;
   if (!client_hello.GetStringPiece(kPUBS, &public_value)) {
     *error_details = "Missing public value";
     return QUIC_INVALID_CRYPTO_MESSAGE_PARAMETER;
   }
 
+  //调用requested_config中对应的KEXS算法的CalculateSharedKey()方法使用公钥计算共享密钥值。
+  // 如果失败,返回QUIC_INVALID_CRYPTO_MESSAGE_PARAMETER错误。
   const KeyExchange* key_exchange =
       requested_config->key_exchanges[key_exchange_index];
   if (!key_exchange->CalculateSharedKey(public_value,
@@ -716,6 +742,17 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
     params->sni = CryptoUtils::NormalizeHostname(sni_tmp.get());
   }
 
+  //这段代码在成功验证CHLO消息及计算出共享密钥后,会继续使用HKDF函数生成连接的初始加密参数和前向安全参数。其中涉及的参数主要为:
+    //
+    //initial_premaster_secret:使用密钥交换算法计算的预主密码。
+    //
+    //initial_crypters:使用initial_premaster_secret派生的初始对称密钥。
+    //
+    //initial_subkey_secret:使用initial_premaster_secret派生的初始子密码。
+    //
+    //forward_secure_premaster_secret:使用公钥交换算法计算的前向安全预主密码。
+    //
+    //diversification_nonce:用于密钥派生的随机数,在QUIC版本大于32的情况下使用。
   string hkdf_suffix;
   const QuicData& client_hello_serialized = client_hello.GetSerialized();
   hkdf_suffix.reserve(sizeof(connection_id) + client_hello_serialized.length() +
@@ -762,6 +799,7 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
 
     char plaintext[kMaxPacketSize];
     size_t plaintext_length = 0;
+    //解密
     const bool success = crypters.decrypter->DecryptPacket(
         kDefaultPathId, 0 /* packet number */,
         StringPiece() /* associated data */, cetv_ciphertext, plaintext,
@@ -814,11 +852,13 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
   }
 
   string forward_secure_public_value;
+  //0-RTT
   if (ephemeral_key_source_.get()) {
     params->forward_secure_premaster_secret =
         ephemeral_key_source_->CalculateForwardSecureKey(
             key_exchange, rand, clock->ApproximateNow(), public_value,
             &forward_secure_public_value);
+  //1-RTT
   } else {
     std::unique_ptr<KeyExchange> forward_secure_key_exchange(
         key_exchange->NewKeyPair(rand));
@@ -842,6 +882,8 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
   shlo_nonce = NewServerNonce(rand, info.now);
   out->SetStringPiece(kServerNonceTag, shlo_nonce);
 
+  //调用DeriveKeys()使用params->forward_secure_premaster_secret和forward_secure_hkdf_input生成前向安全对称密钥params->forward_secure_crypters和子密码params->subkey_secret。
+  // 如果失败,返回QUIC_CRYPTO_SYMMETRIC_KEY_SETUP_FAILED错误。
   if (!CryptoUtils::DeriveKeys(
           params->forward_secure_premaster_secret, params->aead,
           info.client_nonce,
@@ -853,12 +895,14 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
     return QUIC_CRYPTO_SYMMETRIC_KEY_SETUP_FAILED;
   }
 
+  //生成supported_version_tags,包含服务器支持的QUIC版本标签。并添加到SHLO消息中。
   out->set_tag(kSHLO);
   QuicTagVector supported_version_tags;
   for (size_t i = 0; i < supported_versions.size(); ++i) {
     supported_version_tags.push_back(
         QuicVersionToQuicTag(supported_versions[i]));
   }
+  //生成新的Source-address Token,包含客户端地址client_address。并添加到SHLO消息中。
   out->SetVector(kVER, supported_version_tags);
   out->SetStringPiece(
       kSourceAddressTokenTag,
@@ -866,6 +910,7 @@ QuicErrorCode QuicCryptoServerConfig::ProcessClientHello(
                             client_address.address(), rand, info.now, nullptr));
   QuicSocketAddressCoder address_coder(client_address);
   out->SetStringPiece(kCADR, address_coder.Encode());
+  //添加前向安全公钥forward_secure_public_value到SHLO消息中。
   out->SetStringPiece(kPUBS, forward_secure_public_value);
 
   return QUIC_NO_ERROR;
@@ -1074,6 +1119,7 @@ void QuicCryptoServerConfig::EvaluateClientHello(
     return;
   }
 
+  //uid
   client_hello.GetStringPiece(kUAID, &info->user_agent_id);
 
   HandshakeFailureReason source_address_token_error = MAX_FAILURE_REASON;
@@ -1121,6 +1167,7 @@ void QuicCryptoServerConfig::EvaluateClientHello(
   }
 
   bool get_proof_failed = false;
+  //将config序列化
   string serialized_config = primary_config->serialized;
   string chlo_hash;
   CryptoUtils::HashHandshakeMessage(client_hello, &chlo_hash);
@@ -1144,6 +1191,7 @@ void QuicCryptoServerConfig::EvaluateClientHello(
   }
 
   // No need to get a new proof if one was already generated.
+  //验证证书
   if (need_proof &&
       !proof_source_->GetProof(server_ip, info->sni.as_string(),
                                serialized_config, version, chlo_hash,

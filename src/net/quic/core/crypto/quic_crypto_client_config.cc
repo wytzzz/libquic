@@ -415,6 +415,7 @@ void QuicCryptoClientConfig::ClearCachedStates(const ServerIdFilter& filter) {
   }
 }
 
+//这个函数的主要作用是生成一个用于0-RTT的初期ClientHello消息(Inchoate ClientHello)
 void QuicCryptoClientConfig::FillInchoateClientHello(
     const QuicServerId& server_id,
     const QuicVersion preferred_version,
@@ -423,6 +424,7 @@ void QuicCryptoClientConfig::FillInchoateClientHello(
     bool demand_x509_proof,
     QuicCryptoNegotiatedParameters* out_params,
     CryptoHandshakeMessage* out) const {
+    //设置消息的类型为kCHLO,表示这是一个ClientHello消息。并设置最小大小
   out->set_tag(kCHLO);
   // TODO(rch): Remove this when we remove:
   // FLAGS_quic_use_chlo_packet_size
@@ -430,9 +432,11 @@ void QuicCryptoClientConfig::FillInchoateClientHello(
 
   // Server name indication. We only send SNI if it's a valid domain name, as
   // per the spec.
+  //如果服务器名称是合法的域名,则在消息中包含SNI(Server Name Indication)扩展,用于指示服务器的域名。
   if (CryptoUtils::IsValidSNI(server_id.host())) {
     out->SetStringPiece(kSNI, server_id.host());
   }
+  //在消息中包含客户端支持的QUIC版本(preferred_version)。
   out->SetValue(kVER, QuicVersionToQuicTag(preferred_version));
 
   if (!user_agent_id_.empty()) {
@@ -449,6 +453,7 @@ void QuicCryptoClientConfig::FillInchoateClientHello(
     }
   }
 
+  //如果客户端缓存中包含源地址token(Source Address Token),则在消息中包含该token。这用于0-RTT。
   if (!cached->source_address_token().empty()) {
     out->SetStringPiece(kSourceAddressTokenTag, cached->source_address_token());
   }
@@ -500,9 +505,12 @@ QuicErrorCode QuicCryptoClientConfig::FillClientHello(
     string* error_details) const {
   DCHECK(error_details != nullptr);
 
+  //
   FillInchoateClientHello(server_id, preferred_version, cached, rand,
                           /* demand_x509_proof= */ true, out_params, out);
 
+
+  //获取server缓存
   const CryptoHandshakeMessage* scfg = cached->GetServerConfig();
   if (!scfg) {
     // This should never happen as our caller should have checked
@@ -572,6 +580,7 @@ QuicErrorCode QuicCryptoClientConfig::FillClientHello(
   }
 
   StringPiece public_value;
+  //获取缓存server的公钥
   if (scfg->GetNthValue24(kPUBS, key_exchange_index, &public_value) !=
       QUIC_NO_ERROR) {
     *error_details = "Missing public value";
@@ -605,11 +614,13 @@ QuicErrorCode QuicCryptoClientConfig::FillClientHello(
       return QUIC_CRYPTO_INTERNAL_ERROR;
   }
 
+  //计算初始秘钥
   if (!out_params->client_key_exchange->CalculateSharedKey(
           public_value, &out_params->initial_premaster_secret)) {
     *error_details = "Key exchange failure";
     return QUIC_INVALID_CRYPTO_MESSAGE_PARAMETER;
   }
+
   out->SetStringPiece(kPUBS, out_params->client_key_exchange->public_value());
 
   const vector<string>& certs = cached->certs();
@@ -709,6 +720,7 @@ QuicErrorCode QuicCryptoClientConfig::FillClientHello(
   CryptoUtils::Diversification diversification =
       actual_version > QUIC_VERSION_32 ? CryptoUtils::Diversification::Pending()
                                        : CryptoUtils::Diversification::Never();
+  //使用initial_premaster_secret派生initial_crypters和subkey_secret
   if (!CryptoUtils::DeriveKeys(out_params->initial_premaster_secret,
                                out_params->aead, out_params->client_nonce,
                                out_params->server_nonce, hkdf_input,
@@ -771,6 +783,7 @@ QuicErrorCode QuicCryptoClientConfig::CacheNewServerConfig(
     }
 
     message.GetStringPiece(kCertificateSCTTag, &cert_sct);
+    //设置服务器证书
     cached->SetProof(certs, cert_sct, chlo_hash, proof);
   } else {
     // Secure QUIC: clear existing proof as we have been sent a new SCFG
@@ -807,6 +820,7 @@ QuicErrorCode QuicCryptoClientConfig::ProcessRejection(
   }
 
   QuicErrorCode error =
+      //处理服务器的配置.
       CacheNewServerConfig(rej, now, version, chlo_hash,
                            out_params->cached_certs, cached, error_details);
   if (error != QUIC_NO_ERROR) {
@@ -844,6 +858,7 @@ QuicErrorCode QuicCryptoClientConfig::ProcessServerHello(
     string* error_details) {
   DCHECK(error_details != nullptr);
 
+  //验证版本
   QuicErrorCode valid = CryptoUtils::ValidateServerHello(
       server_hello, negotiated_versions, error_details);
   if (valid != QUIC_NO_ERROR) {
@@ -852,10 +867,12 @@ QuicErrorCode QuicCryptoClientConfig::ProcessServerHello(
 
   // Learn about updated source address tokens.
   StringPiece token;
+  //如果有 source address token,就更新缓存。
   if (server_hello.GetStringPiece(kSourceAddressTokenTag, &token)) {
     cached->set_source_address_token(token);
   }
 
+  //提取 SHLO 消息中的服务器随机数(server nonce)。如果没有,就返回错误
   StringPiece shlo_nonce;
   if (!server_hello.GetStringPiece(kServerNonceTag, &shlo_nonce)) {
     *error_details = "server hello missing server nonce";
@@ -865,24 +882,26 @@ QuicErrorCode QuicCryptoClientConfig::ProcessServerHello(
   // TODO(agl):
   //   learn about updated SCFGs.
 
+  //提取 SHLO 消息中的Public key,如果没有,就返回错误
   StringPiece public_value;
   if (!server_hello.GetStringPiece(kPUBS, &public_value)) {
     *error_details = "server hello missing forward secure public value";
     return QUIC_INVALID_CRYPTO_MESSAGE_PARAMETER;
   }
-
+  //使用服务端的公钥和客户端的密钥进行密钥交换,生成前向安全预掌握密钥。如果失败就返回错误
   if (!out_params->client_key_exchange->CalculateSharedKey(
           public_value, &out_params->forward_secure_premaster_secret)) {
     *error_details = "Key exchange failure";
     return QUIC_INVALID_CRYPTO_MESSAGE_PARAMETER;
   }
 
+
   string hkdf_input;
   const size_t label_len = strlen(QuicCryptoConfig::kForwardSecureLabel) + 1;
   hkdf_input.reserve(label_len + out_params->hkdf_input_suffix.size());
   hkdf_input.append(QuicCryptoConfig::kForwardSecureLabel, label_len);
   hkdf_input.append(out_params->hkdf_input_suffix);
-
+  //创建加密器和解密器
   if (!CryptoUtils::DeriveKeys(
           out_params->forward_secure_premaster_secret, out_params->aead,
           out_params->client_nonce,
@@ -911,6 +930,7 @@ QuicErrorCode QuicCryptoClientConfig::ProcessServerConfigUpdate(
     *error_details = "ServerConfigUpdate must have kSCUP tag.";
     return QUIC_INVALID_CRYPTO_MESSAGE_TYPE;
   }
+  //处理server的更新
   return CacheNewServerConfig(server_config_update, now, version, chlo_hash,
                               out_params->cached_certs, cached, error_details);
 }

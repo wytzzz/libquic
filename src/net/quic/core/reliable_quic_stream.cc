@@ -85,9 +85,10 @@ void ReliableQuicStream::SetFromConfig() {}
 void ReliableQuicStream::OnStreamFrame(const QuicStreamFrame& frame) {
   DCHECK_EQ(frame.stream_id, id_);
 
+  //检查当前流是否被完全关闭。如果尚未完全关闭,可以继续处理。
   DCHECK(!(read_side_closed_ && write_side_closed_));
 
-  //收到fin frame
+  //如果接收到的帧设置了FIN标记,表示该帧是流的最后一帧。设置fin_received_标记,并可能调用StreamDraining()进行流的清空。
   if (frame.fin) {
     fin_received_ = true;
     if (fin_sent_) {
@@ -95,6 +96,7 @@ void ReliableQuicStream::OnStreamFrame(const QuicStreamFrame& frame) {
     }
   }
 
+  //如果当前流的读端已关闭,忽略接收到的数据,直接返回。
   if (read_side_closed_) {
     DVLOG(1) << ENDPOINT << "Ignoring data in frame " << frame.stream_id;
     // The subclass does not want to read data:  blackhole the data.
@@ -107,6 +109,7 @@ void ReliableQuicStream::OnStreamFrame(const QuicStreamFrame& frame) {
 
   // Flow control is interested in tracking highest received offset.
   // Only interested in received frames that carry data.
+  //如果接收到的数据长度 > 0,则可能需要更新接收偏移量信息。调用MaybeIncreaseHighestReceivedOffset()更新,并检查是否导致流控违规。如果违规,关闭连接。
   if (frame_payload_size > 0 &&
       MaybeIncreaseHighestReceivedOffset(frame.offset + frame_payload_size)) {
     // As the highest received offset has changed, check to see if this is a
@@ -119,7 +122,7 @@ void ReliableQuicStream::OnStreamFrame(const QuicStreamFrame& frame) {
       return;
     }
   }
-
+  //调用sequencer_的OnStreamFrame()方法将该帧添加到重新排序缓存中。
   sequencer_.OnStreamFrame(frame);
 }
 

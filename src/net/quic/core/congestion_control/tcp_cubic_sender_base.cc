@@ -113,6 +113,7 @@ void TcpCubicSenderBase::ResumeConnectionState(
   QuicTime::Delta rtt =
       QuicTime::Delta::FromMilliseconds(cached_network_params.min_rtt_ms());
 
+  //网络恢复时设置cwnd
   SetCongestionWindowFromBandwidthAndRtt(bandwidth, rtt);
 }
 
@@ -133,12 +134,11 @@ void TcpCubicSenderBase::OnCongestionEvent(
     QuicByteCount bytes_in_flight,
     const CongestionVector& acked_packets,
     const CongestionVector& lost_packets) {
-  //
+  //判断是否可以退出慢启动.
   if (rtt_updated && InSlowStart() &&
       hybrid_slow_start_.ShouldExitSlowStart(
           rtt_stats_->latest_rtt(), rtt_stats_->min_rtt(),
           GetCongestionWindow() / kDefaultTCPMSS)) {
-    //
     ExitSlowstart();
   }
 
@@ -155,9 +155,11 @@ void TcpCubicSenderBase::OnCongestionEvent(
   }
 }
 
+
 void TcpCubicSenderBase::OnPacketAcked(QuicPacketNumber acked_packet_number,
                                        QuicByteCount acked_bytes,
                                        QuicByteCount bytes_in_flight) {
+
   largest_acked_packet_number_ =
       max(acked_packet_number, largest_acked_packet_number_);
   if (InRecovery()) {
@@ -191,6 +193,7 @@ bool TcpCubicSenderBase::OnPacketSent(
     // PRR is used when in recovery.
     prr_.OnPacketSent(bytes);
   }
+
   DCHECK_LT(largest_sent_packet_number_, packet_number);
   largest_sent_packet_number_ = packet_number;
   hybrid_slow_start_.OnPacketSent(packet_number);
@@ -264,12 +267,14 @@ bool TcpCubicSenderBase::IsCwndLimited(QuicByteCount bytes_in_flight) const {
   if (bytes_in_flight >= congestion_window) {
     return true;
   }
+  //可用空间 small enough (小于kMaxBurstBytes),则也视为达到拥塞限制
   const QuicByteCount available_bytes = congestion_window - bytes_in_flight;
   const bool slow_start_limited =
       InSlowStart() && bytes_in_flight > congestion_window / 2;
-  return slow_start_limited || available_bytes <= kMaxBurstBytes;
+  return slow_start_limited || available_bytes  <= kMaxBurstBytes;
 }
 
+//
 bool TcpCubicSenderBase::InRecovery() const {
   return largest_acked_packet_number_ <= largest_sent_at_last_cutback_ &&
          largest_acked_packet_number_ != 0;

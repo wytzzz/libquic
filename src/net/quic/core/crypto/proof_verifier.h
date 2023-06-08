@@ -73,6 +73,8 @@ class NET_EXPORT_PRIVATE ProofVerifier {
   //
   // The signature uses SHA-256 as the hash function and PSS padding in the
   // case of RSA.
+  //获取对方的身份证明(如TLS证书)
+  //分析和检查证明的有效性,包括:
   virtual QuicAsyncStatus VerifyProof(
       const std::string& hostname,
       const uint16_t port,
